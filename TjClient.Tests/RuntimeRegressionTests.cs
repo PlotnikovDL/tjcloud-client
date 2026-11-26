@@ -9,7 +9,10 @@ static class RuntimeRegressionTests
     public static void TerminalBeforeReady() => ExerciseHandoff("before-ready");
     public static void TerminalBeforeCommit() => ExerciseHandoff("before-commit");
 
-    private static void ExerciseHandoff(string? terminalBoundary) => TjClient.Wpf.CompactWindowTests.InSta(async () =>
+    private static void ExerciseHandoff(string? terminalBoundary) => ExerciseHandoffAsync(terminalBoundary).GetAwaiter().GetResult();
+
+    // No WPF is exercised here. The compiler and child each own their bounded wait.
+    private static async Task ExerciseHandoffAsync(string? terminalBoundary)
     {
         using var fixture = new Fixture();
         var source = Path.Combine(fixture.Root, "source");
@@ -21,7 +24,8 @@ static class RuntimeRegressionTests
         File.WriteAllText(Path.Combine(source, "Program.cs"), """
             using System.Diagnostics;
             using System.Text.Json;
-            File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "child.txt"), Environment.ProcessId.ToString());
+            File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "child.tmp"), Environment.ProcessId.ToString());
+            File.Move(Path.Combine(AppContext.BaseDirectory, "child.tmp"), Path.Combine(AppContext.BaseDirectory, "child.txt"));
             File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "argv.json"), JsonSerializer.Serialize(args));
             var pid = args.Single(x => x.StartsWith("/WAITPID="))[9..];
             var start = args.Single(x => x.StartsWith("/WAITSTART="))[11..];
@@ -74,14 +78,19 @@ static class RuntimeRegressionTests
             using var http = new HttpClient(feed);
             using var lifetime = new TerminalLifetime(output, download, terminalBoundary);
             using var backend = new SignedUpdateBackend(state, "0.9.0", feed.PublicKey, lifetime, http, null);
+            await using var coordinator = new UpdateCoordinator(state, () => backend);
+            await coordinator.SetConsentAsync(true);
             try
             {
-            var outcome = await backend.CheckAsync(CancellationToken.None);
-            Console.WriteLine($"TERMINAL {terminalBoundary} outcome={outcome} closeAttempts={lifetime.CloseAttempts} closed={lifetime.Closed} resumed={lifetime.Resumed}");
+            var outcome = await coordinator.CheckAsync();
+            Console.WriteLine($"TERMINAL {terminalBoundary} outcome={outcome} launches={lifetime.Launches} closeAttempts={lifetime.CloseAttempts} closed={lifetime.Closed} resumed={lifetime.Resumed}");
+            Assert.True(ReferenceEquals(backend.AuthorizeHandoff?.Target, coordinator), "Production authorization must be connected");
             Assert.Equal(UpdateOutcome.Failed, outcome);
+            Assert.Equal(1, lifetime.Launches);
             Assert.Equal(terminalBoundary == "before-ready" ? 0 : 1, lifetime.CloseAttempts);
             Assert.Equal(0, lifetime.Closed);
             Assert.Equal(1, lifetime.Resumed);
+            Assert.True(!Directory.EnumerateFiles(download, "update-*.exe").Any(), "Failed handoff payload cleanup did not finish");
             }
             finally
             {
@@ -132,12 +141,13 @@ static class RuntimeRegressionTests
             lifetime.Child.Dispose();
             Console.WriteLine("HARMLESS_BACKEND " + mode + (mode == "no-ack" ? " no Resume or second launch without acknowledgement" : " acknowledged abort before Resume"));
         }
-    });
+    }
 
     private sealed class TerminalLifetime(string helper, string download, string boundary) : IUpdateLifetime, IDisposable
     {
-        public int Closed, Resumed, CloseAttempts;
+        public int Closed, Resumed, CloseAttempts, Launches;
         private Process? child;
+        private bool terminalConfirmed;
         public Task<bool> PrepareAsync(CancellationToken token)
         {
             foreach (var file in Directory.GetFiles(helper).Where(x => x.EndsWith(".dll") || x.EndsWith(".runtimeconfig.json") || x.EndsWith(".deps.json")))
@@ -154,6 +164,7 @@ static class RuntimeRegressionTests
         {
             token.ThrowIfCancellationRequested();
             launch();
+            Launches++;
             await WaitForFile("child.txt");
             child = Process.GetProcessById(int.Parse(File.ReadAllText(Path.Combine(download, "child.txt"))));
             _ = child.Handle;
@@ -163,8 +174,16 @@ static class RuntimeRegressionTests
         {
             File.WriteAllText(Path.Combine(download, "reject-now.txt"), "reject after Ready");
             await WaitForFile("stopped.txt");
-            await child!.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
-            Assert.Equal(0, child.ExitCode);
+            using var parent = Process.GetCurrentProcess();
+            var prefix = @"Local\TJCloudClient.Update." + parent.Id.ToString(CultureInfo.InvariantCulture) + "." +
+                parent.StartTime.ToUniversalTime().ToFileTimeUtc().ToString(CultureInfo.InvariantCulture) + ".";
+            using var ready = EventWaitHandle.OpenExisting(prefix + "Ready");
+            using var stopped = EventWaitHandle.OpenExisting(prefix + "Stopped");
+            Assert.True(ready.WaitOne(0) && stopped.WaitOne(0), "Both Ready and terminal Stopped must be signalled");
+            terminalConfirmed = true;
+            // Observe native process termination before deleting its mapped files.
+            Assert.True(await Task.Run(() => child!.WaitForExit(5000)), "Harmless child did not terminate");
+            Assert.Equal(0, child!.ExitCode);
         }
         public Task CloseAsync() { Closed++; return Task.CompletedTask; }
         public async Task CloseAsync(Action commit, CancellationToken token)
@@ -177,11 +196,16 @@ static class RuntimeRegressionTests
         }
         public Task ResumeAsync()
         {
-            Assert.True(File.Exists(Path.Combine(download, "stopped.txt")), "Resume requires terminal acknowledgement");
+            Assert.True(terminalConfirmed, "Resume requires confirmed Ready and terminal Stopped");
             Resumed++;
             return Task.CompletedTask;
         }
-        public void Dispose() => child?.Dispose();
+        public void Dispose()
+        {
+            if (child == null) return;
+            try { Assert.True(child.WaitForExit(5000), "Harmless child still owns fixture files"); }
+            finally { child.Dispose(); }
+        }
     }
 
     private sealed class FaultLifetime(string helper, string download, string mode, CancellationTokenSource cancellation) : IUpdateLifetime
