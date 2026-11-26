@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 import json
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / 'scripts/Test-AutoUpdateE2E.ps1'
@@ -84,6 +85,112 @@ if ($hashes.Count -ne 2 -or $hashes[0] -cne $hashes[1]) { throw 'Literal payload
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         self.assertEqual({'parserErrors': 0, 'commands': 4, 'hashes': 2, 'failureRecords': 2},
                          json.loads(result.stdout))
+
+    def test_process_launch_paths_and_streams_are_literal(self):
+        pwsh = shutil.which('pwsh')
+        if not pwsh or os.name != 'nt':
+            self.skipTest('Windows PowerShell process-path regression')
+        probe = r'''
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+$tokens = $null; $errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile($env:E2E_SOURCE, [ref]$tokens, [ref]$errors)
+if ($errors.Count) { throw 'Harness parser errors' }
+$commands = @($ast.FindAll({ param($n)
+    $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -in @('Start-Process', 'Start-LiteralProcess')
+}, $true))
+if ($commands.Count -ne 3) { throw 'Expected installer, server and old-client launch commands' }
+foreach ($helper in $ast.FindAll({ param($n)
+    $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -in @('Start-LiteralProcess', 'Complete-ProcessOutput')
+}, $true)) { . ([scriptblock]::Create($helper.Extent.Text)) }
+$case = $env:E2E_PROBE_CASE
+$destination = Join-Path $case 'installed [cd] ! % & client'
+$serverExe = Join-Path $destination 'TjCloudClient.exe'
+$inputPath = Join-Path $case 'input [ef] ! % & spaces.json'
+$Path = $serverExe
+$installCall = @($ast.FindAll({ param($n)
+    $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Invoke-Installer' -and $n.Extent.Text.Contains("`$packages['0.9.0']")
+}, $true))
+if ($installCall.Count -ne 1) { throw 'Expected exact old-installer invocation' }
+$Arguments = & ([scriptblock]::Create($installCall[0].CommandElements[2].Extent.Text))
+$prefix = @('-S', '-B', "`"$env:E2E_CHILD`"")
+if ($commands[0].GetCommandName() -eq 'Start-LiteralProcess') {
+    $prefix = @('-S', '-B', $env:E2E_CHILD)
+
+}
+$observations = @()
+foreach ($command in $commands) {
+    $text = $command.Extent.Text
+    $kind = if ($text.Contains('$serverExe')) { 'server' } elseif ($text.Contains('$destination')) { 'old' } else { 'installer' }
+    $env:E2E_CHILD_REPORT = Join-Path $case "$kind.json"
+    # Keep every filesystem operand byte-identical to the source command. Only
+    # prepend the interpreter/script argv needed by the harmless stand-in EXE.
+    $parameters = @($command.CommandElements)
+    $argument = $null
+    for ($i = 0; $i -lt $parameters.Count; $i++) {
+        if ($parameters[$i] -is [Management.Automation.Language.CommandParameterAst] -and $parameters[$i].ParameterName -eq 'ArgumentList') {
+            $argument = $parameters[$i + 1].Extent.Text
+        }
+    }
+    if ($null -ne $argument) { $text = $text.Replace($argument, ('(@($prefix) + @(' + $argument + '))')) }
+    else { $text += ' -ArgumentList $prefix' }
+    $p = & ([scriptblock]::Create($text))
+    try {
+        $identity = $p.Id
+        $started = $p.StartTime.ToFileTimeUtc()
+        if (-not $p.WaitForExit(15000)) { throw 'Harmless child timeout' }
+        $p.WaitForExit()
+        if (Get-Command Complete-ProcessOutput -ErrorAction SilentlyContinue) { Complete-ProcessOutput $p }
+        if ($p.ExitCode -ne 7) { throw 'Harmless child exit code changed' }
+        $report = Get-Content -LiteralPath $env:E2E_CHILD_REPORT -Raw | ConvertFrom-Json
+        if ($report.pid -ne $identity -or $started -le 0 -or $report.inherited -cne 'synthetic inherited ! % & []') { throw 'Identity or inherited environment changed' }
+        $expected = @(switch ($kind) {
+            'server' { @('--updater-integration-server', $inputPath) }
+            'old' { @() }
+            'installer' { @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/SP-', '/NORESTART', '/NOCLOSEAPPLICATIONS', '/NORESTARTAPPLICATIONS', '/NOICONS', "/DIR=$destination") }
+        })
+        if ((ConvertTo-Json -InputObject @($report.argv) -Compress) -cne (ConvertTo-Json -InputObject @($expected) -Compress)) { throw 'Child argv changed' }
+        if ($kind -eq 'old' -and $report.cwd -cne $destination) { throw 'WorkingDirectory changed' }
+        if ($kind -ne 'installer') {
+            foreach ($stream in @('stdout', 'stderr')) {
+                $log = Join-Path $case "$kind.$stream.log"
+                if ([IO.File]::ReadAllText($log).Trim() -cne "synthetic-$stream") { throw 'Wrong literal log path or lost output' }
+            }
+        }
+        $observations += @{ kind = $kind; exit = $p.ExitCode; identity = $true; argv = $true; streams = ($kind -ne 'installer') }
+    } finally { $p.Dispose() }
+}
+@{ parserErrors = $errors.Count; launches = $observations } | ConvertTo-Json -Depth 4 -Compress
+'''
+        with tempfile.TemporaryDirectory(prefix='updater-process-') as temporary:
+            case = Path(temporary) / 'root [ab] ! % & spaces' / 'case [cd] ! % & spaces'
+            destination = case / 'installed [cd] ! % & client'
+            destination.mkdir(parents=True)
+            python_home = Path(sys.executable).parent
+            shutil.copyfile(sys.executable, destination / 'TjCloudClient.exe')
+            for pattern in ('python*.dll', 'vcruntime*.dll'):
+                for library in python_home.glob(pattern):
+                    shutil.copyfile(library, destination / library.name)
+            child = case / 'child [ef] ! % & spaces.py'
+            child.write_text('import json, os, sys\n'
+                             'with open(os.environ["E2E_CHILD_REPORT"], "w") as f:\n'
+                             '    json.dump(dict(pid=os.getpid(), argv=sys.argv[1:], cwd=os.getcwd(), inherited=os.environ.get("E2E_INHERITED")), f)\n'
+                             'print("synthetic-stdout")\n'
+                             'print("synthetic-stderr", file=sys.stderr)\n'
+                             'sys.exit(7)\n', encoding='utf-8')
+            env = os.environ.copy()
+            env.update(E2E_SOURCE=str(SCRIPT), E2E_PROBE_CASE=str(case), E2E_CHILD=str(child),
+                       E2E_INHERITED='synthetic inherited ! % & []', PYTHONHOME=str(python_home),
+                       PYTHONDONTWRITEBYTECODE='1')
+            result = subprocess.run([pwsh, '-NoProfile', '-Command', probe], env=env,
+                                    capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        report = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertEqual(0, report['parserErrors'])
+        self.assertEqual({'server', 'old', 'installer'}, {p['kind'] for p in report['launches']})
+        self.assertEqual(3, len(report['launches']))
+        self.assertTrue(all(p['exit'] == 7 and p['identity'] and p['argv'] for p in report['launches']))
+        self.assertEqual(2, sum(p['streams'] for p in report['launches']))
 
     def test_real_runtime_not_installer_interception(self):
         source = (ROOT / 'TjClient.Tests/UpdaterIntegration.cs').read_text(encoding='utf-8')

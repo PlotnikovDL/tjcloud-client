@@ -109,12 +109,19 @@ static class RuntimeRegressionTests
         await handoff.WaitReadyAsync(CancellationToken.None);
         using var child = Process.GetProcessById(int.Parse(File.ReadAllText(Path.Combine(output, "child.txt"))));
         _ = child.Handle;
+        try
+        {
         var actual = JsonSerializer.Deserialize<string[]>(File.ReadAllText(Path.Combine(output, "argv.json")))!;
         Assert.True(actual.SequenceEqual(startInfo.ArgumentList), "Actual harmless program argv changed in transit");
         Assert.True(actual.Take(SignedUpdateBackend.InstallerArguments.Split(' ').Length).SequenceEqual(SignedUpdateBackend.InstallerArguments.Split(' ')));
         Assert.True(await handoff.AbortAsync());
         Assert.True(File.Exists(Path.Combine(output, "aborted.txt")));
-        await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            handoff.Cancel();
+            Assert.True(await Task.Run(() => child.WaitForExit(5000)), "Harmless argv child did not terminate");
+        }
         Assert.Equal(0, child.ExitCode);
         }
         Console.WriteLine("HARMLESS_ARGV preserved spaces ! % &; abort acknowledgement observed");
@@ -125,20 +132,21 @@ static class RuntimeRegressionTests
             using var feed = new SignedUpdateTests.Feed { Payload = File.ReadAllBytes(executable) };
             using var http = new HttpClient(feed);
             using var cancel = new CancellationTokenSource();
-            var lifetime = new FaultLifetime(output, download, mode, cancel);
+            using var lifetime = new FaultLifetime(output, download, mode, cancel);
             using var backend = new SignedUpdateBackend(state, "0.9.0", feed.PublicKey, lifetime, http, null);
             Assert.Equal(mode == "late-cancel" ? UpdateOutcome.Cancelled : UpdateOutcome.Failed, await backend.CheckAsync(cancel.Token));
             Assert.Equal(mode == "no-ack" ? 0 : 1, lifetime.Resumed);
+            Assert.True(lifetime.Child != null);
+            Assert.True(await Task.Run(() => lifetime.Child!.WaitForExit(5000)), "Harmless backend child did not terminate");
+            Assert.Equal(0, lifetime.Child!.ExitCode);
             if (mode == "no-ack")
             {
                 var requests = feed.Requests;
                 Assert.Equal(UpdateOutcome.Deferred, await backend.CheckAsync(CancellationToken.None));
                 Assert.Equal(requests, feed.Requests);
+                Assert.Equal(0, lifetime.Resumed);
             }
-            Assert.True(lifetime.Child != null);
-            await lifetime.Child!.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
-            Assert.Equal(0, lifetime.Child.ExitCode);
-            lifetime.Child.Dispose();
+            else Assert.True(!Directory.EnumerateFiles(download, "update-*.exe").Any(), "Failed handoff payload cleanup did not finish");
             Console.WriteLine("HARMLESS_BACKEND " + mode + (mode == "no-ack" ? " no Resume or second launch without acknowledgement" : " acknowledged abort before Resume"));
         }
     }
@@ -208,7 +216,7 @@ static class RuntimeRegressionTests
         }
     }
 
-    private sealed class FaultLifetime(string helper, string download, string mode, CancellationTokenSource cancellation) : IUpdateLifetime
+    private sealed class FaultLifetime(string helper, string download, string mode, CancellationTokenSource cancellation) : IUpdateLifetime, IDisposable
     {
         public int Resumed;
         public Process? Child;
@@ -229,11 +237,20 @@ static class RuntimeRegressionTests
             commit();
             return CloseAsync();
         }
-        public Task ResumeAsync()
+        public async Task ResumeAsync()
         {
             Assert.True(File.Exists(Path.Combine(download, "aborted.txt")), "Resume before helper latched abort");
+            Assert.True(Child != null, "Resume requires the owned harmless child");
+            // Backend cleanup follows Resume, so join before it can delete mapped files.
+            Assert.True(await Task.Run(() => Child!.WaitForExit(5000)), "Harmless backend child did not terminate before Resume");
+            Assert.Equal(0, Child!.ExitCode);
             Resumed++;
-            return Task.CompletedTask;
+        }
+        public void Dispose()
+        {
+            if (Child == null) return;
+            try { Assert.True(Child.WaitForExit(5000), "Harmless backend child still owns fixture files"); }
+            finally { Child.Dispose(); }
         }
     }
 

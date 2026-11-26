@@ -87,8 +87,44 @@ function Wait-Record([string]$Path, [int]$Seconds = 120) {
     }
     throw "Timeout waiting for $([IO.Path]::GetFileName($Path))."
 }
+function Start-LiteralProcess([string]$FilePath, [string[]]$ArgumentList = @(), [string]$WorkingDirectory,
+    [string]$RedirectStandardOutput, [string]$RedirectStandardError) {
+    $info = [Diagnostics.ProcessStartInfo]::new($FilePath)
+    $info.UseShellExecute = $false
+    foreach ($argument in $ArgumentList) { $info.ArgumentList.Add($argument) }
+    if ($WorkingDirectory) { $info.WorkingDirectory = $WorkingDirectory }
+    $files = @(); $copies = @(); $started = $false
+    $p = [Diagnostics.Process]::new()
+    try {
+        if ($RedirectStandardOutput) {
+            $files += [IO.File]::Open($RedirectStandardOutput, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+            $info.RedirectStandardOutput = $true
+        }
+        if ($RedirectStandardError) {
+            $files += [IO.File]::Open($RedirectStandardError, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+            $info.RedirectStandardError = $true
+        }
+        $p.StartInfo = $info
+        $started = $p.Start()
+        if (-not $started) { throw 'Owned process did not start.' }
+        $index = 0
+        if ($RedirectStandardOutput) { $copies += $p.StandardOutput.BaseStream.CopyToAsync($files[$index++]) }
+        if ($RedirectStandardError) { $copies += $p.StandardError.BaseStream.CopyToAsync($files[$index++]) }
+        $p | Add-Member -NotePropertyName OutputCopies -NotePropertyValue $copies
+        $p | Add-Member -NotePropertyName OutputFiles -NotePropertyValue $files
+        return $p
+    } finally {
+        if (-not $started) { foreach ($file in $files) { $file.Dispose() }; $p.Dispose() }
+    }
+}
+function Complete-ProcessOutput([Diagnostics.Process]$Process) {
+    if ($null -eq $Process.PSObject.Properties['OutputCopies']) { return }
+    try {
+        if (-not [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]$Process.OutputCopies, 20000)) { throw 'Owned process output did not complete.' }
+    } finally { foreach ($file in $Process.OutputFiles) { $file.Dispose() } }
+}
 function Invoke-Installer([string]$Path, [string[]]$Arguments) {
-    $p = Start-Process -FilePath $Path -ArgumentList $Arguments -PassThru
+    $p = Start-LiteralProcess -FilePath $Path -ArgumentList $Arguments
     try { if (-not $p.WaitForExit(120000) -or $p.ExitCode -ne 0) { throw 'Owned installer failed or timed out.' } }
     finally { $p.Dispose() }
 }
@@ -108,7 +144,7 @@ foreach ($scenario in @('running', 'paused', 'tampered')) {
     New-Item -ItemType Directory -Path $handoffTemp | Out-Null
     $env:TEMP = $handoffTemp
     $env:TMP = $handoffTemp
-    $server = Start-Process -FilePath $serverExe -ArgumentList @('--updater-integration-server', "`"$inputPath`"") -PassThru -RedirectStandardOutput (Join-Path $case 'server.stdout.log') -RedirectStandardError (Join-Path $case 'server.stderr.log')
+    $server = Start-LiteralProcess -FilePath $serverExe -ArgumentList @('--updater-integration-server', $inputPath) -RedirectStandardOutput (Join-Path $case 'server.stdout.log') -RedirectStandardError (Join-Path $case 'server.stderr.log')
     $old = $null
     $new = $null
     $updateInstaller = $null
@@ -117,14 +153,14 @@ foreach ($scenario in @('running', 'paused', 'tampered')) {
     try {
         $ready = Wait-Record (Join-Path $case 'server-ready.json') 30
         if ($ready.pid -ne $server.Id -or $ready.version -cne $newVersion) { throw 'Wrong server identity or target version.' }
-        Invoke-Installer $packages['0.9.0'] @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/SP-', '/NORESTART', '/NOCLOSEAPPLICATIONS', '/NORESTARTAPPLICATIONS', '/NOICONS', "/DIR=`"$destination`"")
+        Invoke-Installer $packages['0.9.0'] @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/SP-', '/NORESTART', '/NOCLOSEAPPLICATIONS', '/NORESTARTAPPLICATIONS', '/NOICONS', "/DIR=$destination")
         if ((Get-ItemProperty -LiteralPath $key).DisplayVersion -cne '0.9.0') { throw 'Old install registration mismatch.' }
         $oldAssemblyVersion = [Reflection.AssemblyName]::GetAssemblyName((Join-Path $destination 'TjClient.Tests.dll')).Version.ToString()
         if ($oldAssemblyVersion -cne '0.9.0.0') { throw 'Old assembly version mismatch.' }
         $oldPayloadHash = (Get-FileHash -LiteralPath (Join-Path $destination 'TjClient.Tests.dll')).Hash
         $newAssemblyVersion = $null
         $env:TJCLIENT_UPDATER_E2E_CONFIG = Join-Path $case 'client.dpapi'
-        $old = Start-Process -FilePath (Join-Path $destination 'TjCloudClient.exe') -WorkingDirectory $destination -PassThru -RedirectStandardOutput (Join-Path $case 'old.stdout.log') -RedirectStandardError (Join-Path $case 'old.stderr.log')
+        $old = Start-LiteralProcess -FilePath (Join-Path $destination 'TjCloudClient.exe') -WorkingDirectory $destination -RedirectStandardOutput (Join-Path $case 'old.stdout.log') -RedirectStandardError (Join-Path $case 'old.stderr.log')
         $oldStartFileTime = $old.StartTime.ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture)
         $deadline = [DateTime]::UtcNow.AddMinutes(4)
         $terminalReport = Join-Path $case $(if ($scenario -eq 'tampered') { 'tampered-pass.json' } else { 'new-pass.json' })
@@ -218,6 +254,7 @@ foreach ($scenario in @('running', 'paused', 'tampered')) {
         foreach ($child in @($old, $new, $server, $updateInstaller)) {
             if ($null -ne $child) {
                 if (-not $child.WaitForExit(20000)) { throw 'Owned child did not stop. Refusing destructive cleanup.' }
+                Complete-ProcessOutput $child
                 if ($child.ExitCode -ne 0) { throw "Child exit was nonzero: $($child.ExitCode)." }
             }
         }
