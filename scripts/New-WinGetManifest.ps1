@@ -39,14 +39,14 @@ $schemaVersion = '1.28.0'
 $versionYaml = @"
 # yaml-language-server: `$schema=https://aka.ms/winget-manifest.version.$schemaVersion.schema.json
 $common
-DefaultLocale: en-US
+DefaultLocale: ru-RU
 ManifestType: version
 ManifestVersion: $schemaVersion
 "@
 $localeYaml = @"
 # yaml-language-server: `$schema=https://aka.ms/winget-manifest.defaultLocale.$schemaVersion.schema.json
 $common
-PackageLocale: en-US
+PackageLocale: ru-RU
 Publisher: '$($metadata.Publisher)'
 PublisherUrl: '$($metadata.RepositoryUrl)'
 PublisherSupportUrl: '$($metadata.RepositoryUrl)/issues'
@@ -55,7 +55,7 @@ PackageName: '$($metadata.Product)'
 PackageUrl: '$($metadata.RepositoryUrl)'
 License: '$($metadata.License)'
 LicenseUrl: '$($metadata.RepositoryUrl)/blob/v$Version/LICENSE'
-ShortDescription: Windows client for explicitly approved TJ Cloud log uploads.
+ShortDescription: Клиент для передачи завершённых файлов технологического журнала 1С в TJCloud.
 ManifestType: defaultLocale
 ManifestVersion: $schemaVersion
 "@
@@ -63,7 +63,9 @@ $installerYaml = @"
 # yaml-language-server: `$schema=https://aka.ms/winget-manifest.installer.$schemaVersion.schema.json
 $common
 InstallerType: inno
-Scope: user
+InstallerLocale: ru-RU
+Scope: machine
+ElevationRequirement: elevationRequired
 MinimumOSVersion: 10.0.17763.0
 UpgradeBehavior: install
 InstallModes:
@@ -88,7 +90,7 @@ ManifestVersion: $schemaVersion
 New-Item -ItemType Directory -Force $destination | Out-Null
 $documents = @{
     "$($metadata.Identifier).yaml" = $versionYaml
-    "$($metadata.Identifier).locale.en-US.yaml" = $localeYaml
+    "$($metadata.Identifier).locale.ru-RU.yaml" = $localeYaml
     "$($metadata.Identifier).installer.yaml" = $installerYaml
 }
 foreach ($name in $documents.Keys) {

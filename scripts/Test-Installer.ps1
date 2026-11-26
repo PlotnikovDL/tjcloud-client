@@ -15,9 +15,9 @@ if (-not $RestartProbeOldSetupPath -or -not $RestartProbeSetupPath) { throw 'Hos
 $metadata = Get-PackageMetadata
 $SetupPath = (Resolve-Path -LiteralPath $SetupPath).Path
 $PublishDirectory = (Resolve-Path -LiteralPath $PublishDirectory).Path
-$destination = Join-Path $env:RUNNER_TEMP 'probe'
+$destination = Join-Path $env:ProgramFiles 'TJCloudClient'
 $profile = Join-Path $env:LOCALAPPDATA 'TJCloudClient'
-$key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$($metadata.ProductCode)"
+$key = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$($metadata.ProductCode)"
 if ((Test-Path -LiteralPath $destination) -or (Test-Path -LiteralPath $profile) -or (Test-Path -LiteralPath $key)) { throw 'Runner is not clean. Refusing to touch existing installation or profile.' }
 if (Get-Process -Name TjCloudClient -ErrorAction SilentlyContinue) { throw 'A client is already running. It will not be closed.' }
 New-Item -ItemType Directory -Path $profile | Out-Null
@@ -25,7 +25,22 @@ New-Item -ItemType Directory -Path $profile | Out-Null
 $profileBefore = @(Get-ChildItem -LiteralPath $profile -File -Recurse | ForEach-Object { "$($_.FullName):$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)" })
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $startupBefore = if (Test-Path $runKey) { Get-ItemProperty $runKey | ConvertTo-Json -Compress } else { '' }
-$install = Start-Process -FilePath $SetupPath -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOCLOSEAPPLICATIONS', '/NORESTARTAPPLICATIONS', '/NOICONS', "/DIR=`"$destination`"") -PassThru
+$legacyKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$($metadata.ProductCode)"
+$legacyDirectory = Join-Path $env:LOCALAPPDATA 'Programs/TJCloudClient'
+if ((Test-Path -LiteralPath $legacyKey) -or (Test-Path -LiteralPath $legacyDirectory)) { throw 'Unexpected existing user installation.' }
+$legacySetup = Join-Path $env:RUNNER_TEMP 'published-1.0.1.exe'
+Invoke-WebRequest -Uri "$($metadata.RepositoryUrl)/releases/download/v1.0.1/TJCloudClient-1.0.1-win-x64-setup.exe" -OutFile $legacySetup
+if ((Get-FileHash -LiteralPath $legacySetup).Hash -ine '546cc636b7f0f537f5338f4f92d18eadaeb4fd8aa07dccdcf617861a1506d764') { throw 'Legacy release checksum mismatch.' }
+$quiet = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/SP-', '/NORESTART', '/NOICONS')
+$legacy = Start-Process -FilePath $legacySetup -ArgumentList $quiet -Wait -PassThru
+if ($legacy.ExitCode -ne 0 -or (Get-ItemProperty -LiteralPath $legacyKey).DisplayVersion -cne '1.0.1' -or
+    (Get-ItemProperty -LiteralPath $legacyKey).InstallLocation.TrimEnd('\') -ine $legacyDirectory) { throw 'Published per-user installation failed.' }
+$blockedUpgrade = Start-Process -FilePath $SetupPath -ArgumentList $quiet -Wait -PassThru
+if ($blockedUpgrade.ExitCode -eq 0 -or (Test-Path -LiteralPath $key)) { throw 'A machine installation was allowed over a legacy user installation.' }
+$removeLegacy = Start-Process -FilePath (Join-Path $legacyDirectory 'unins000.exe') -ArgumentList $quiet -Wait -PassThru
+if ($removeLegacy.ExitCode -ne 0 -or (Test-Path -LiteralPath $legacyKey)) { throw 'Legacy uninstall failed.' }
+& (Join-Path $PSScriptRoot 'Test-InstallerWizard.ps1') -SetupPath $SetupPath -ExpectedDirectory $destination
+$install = Start-Process -FilePath $SetupPath -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOCLOSEAPPLICATIONS', '/NORESTARTAPPLICATIONS', '/NOICONS') -PassThru
 try {
     if (-not $install.WaitForExit(120000)) { throw 'Installer timed out on the runner.' }
     if ($install.ExitCode -ne 0) { throw "Installer failed: $($install.ExitCode)" }
@@ -33,6 +48,7 @@ try {
 finally { $install.Dispose() }
 if (Get-Process -Name TjCloudClient -ErrorAction SilentlyContinue) { throw 'Silent installation unexpectedly launched the client.' }
 $registration = Get-ItemProperty -LiteralPath $key
+if ($registration.InstallLocation.TrimEnd('\') -ine $destination) { throw 'Default destination must be the 64-bit Program Files directory.' }
 if ($registration.DisplayName -ne $metadata.Product -or $registration.Publisher -ne $metadata.Publisher -or $registration.DisplayVersion -ne $metadata.Version) { throw 'Uninstall registration does not match package metadata.' }
 foreach ($source in Get-ChildItem -LiteralPath $PublishDirectory -File -Recurse) {
     $relative = $source.FullName.Substring($PublishDirectory.Length).TrimStart('\', '/')
@@ -40,7 +56,7 @@ foreach ($source in Get-ChildItem -LiteralPath $PublishDirectory -File -Recurse)
     if (-not (Test-Path -LiteralPath $installed)) { throw "Installed payload is missing: $relative" }
     if ((Get-FileHash -LiteralPath $source.FullName).Hash -ne (Get-FileHash -LiteralPath $installed).Hash) { throw "Installed payload differs: $relative" }
 }
-& (Join-Path $PSScriptRoot 'Test-Smoke.ps1') -ExePath (Join-Path $destination 'TjCloudClient.exe') -ExpectedMode installed
+& (Join-Path $PSScriptRoot 'Test-Smoke.ps1') -ExePath (Join-Path $destination 'TjCloudClient.exe') -ExpectedMode installed -ReportDirectory (Join-Path $env:RUNNER_TEMP 'gui-smoke')
 $uninstall = Start-Process -FilePath (Join-Path $destination 'unins000.exe') -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -PassThru
 try {
     if (-not $uninstall.WaitForExit(120000)) { throw 'Uninstaller timed out on the runner.' }

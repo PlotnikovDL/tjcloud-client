@@ -13,7 +13,9 @@ public partial class App : Application
     {
         base.OnStartup(e);
         var smoke = e.Args.Contains("--smoke-test");
-        var folder = smoke ? Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "gui-smoke")) : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TJCloudClient");
+        var folder = smoke
+            ? Path.GetFullPath(Environment.GetEnvironmentVariable("TJCLOUD_SMOKE_DIRECTORY") ?? Path.Combine(Path.GetTempPath(), "TJCloudClient-gui-smoke"))
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TJCloudClient");
         try
         {
             profileLock = new ProfileLock(folder);

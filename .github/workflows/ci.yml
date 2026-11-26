@@ -69,7 +69,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: ./scripts/Get-InnoCompiler.ps1 -ToolRoot "$env:RUNNER_TEMP/inno-6.7.4"
-      - name: Compile per-user installer and create ZIP with checksums
+      - name: Compile Russian machine-wide installer and create ZIP with checksums
         run: |
           ./scripts/Package.ps1 -PublishDirectory "$env:RUNNER_TEMP/build-output/publish" -OutputDirectory "$env:RUNNER_TEMP/packages" -IsccPath "$env:RUNNER_TEMP/inno-6.7.4/compiler/ISCC.exe"
       - name: Smoke test the extracted ZIP
@@ -126,6 +126,7 @@ jobs:
           archive: true
           path: |
             ${{ runner.temp }}/build-output/native-tests.log
+            ${{ runner.temp }}/wizard-evidence/*
             ${{ runner.temp }}/build-output/gui-smoke/*
             ${{ runner.temp }}/zip-probe/gui-smoke/*
             ${{ runner.temp }}/gui-smoke/*

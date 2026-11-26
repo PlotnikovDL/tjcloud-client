@@ -1,12 +1,13 @@
 [CmdletBinding()]
-param([Parameter(Mandatory)][string]$ExePath, [ValidateSet('installed', 'portable')][string]$ExpectedMode)
+param([Parameter(Mandatory)][string]$ExePath, [ValidateSet('installed', 'portable')][string]$ExpectedMode, [string]$ReportDirectory)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $ExePath = (Resolve-Path -LiteralPath $ExePath).Path
 $app = Split-Path $ExePath -Parent
 $runtime = Join-Path $app 'coreclr.dll'
 if (-not (Test-Path -LiteralPath $runtime)) { throw 'Expected a self-contained application with coreclr.dll.' }
-$reportDirectory = [IO.Path]::GetFullPath((Join-Path $app '../gui-smoke'))
+if (!$ReportDirectory) { $ReportDirectory = Join-Path $app '../gui-smoke' }
+$reportDirectory = [IO.Path]::GetFullPath($ReportDirectory)
 $report = Join-Path $reportDirectory 'window-smoke.txt'
 if (Test-Path -LiteralPath $report) { Remove-Item -LiteralPath $report }
 $start = [Diagnostics.ProcessStartInfo]::new()
@@ -17,6 +18,7 @@ $start.WorkingDirectory = $app
 $start.EnvironmentVariables['PATH'] = (Join-Path $env:SystemRoot 'System32')
 $start.EnvironmentVariables['DOTNET_ROOT'] = (Join-Path $app 'no-external-runtime')
 $start.EnvironmentVariables['DOTNET_ROOT_X64'] = $start.EnvironmentVariables['DOTNET_ROOT']
+$start.EnvironmentVariables['TJCLOUD_SMOKE_DIRECTORY'] = $reportDirectory
 $started = [DateTime]::UtcNow
 $process = [Diagnostics.Process]::Start($start)
 $loadedRuntime = $null
