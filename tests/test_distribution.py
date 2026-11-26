@@ -87,7 +87,10 @@ class BuildContracts(unittest.TestCase):
             text = '\n'.join(file.read_text(encoding='utf-8-sig') for file in files)
             self.assertIn('SCHEMA ONLY', text)
             self.assertIn(hashlib.sha256(fixture.read_bytes()).hexdigest().upper(), text)
-            for expected in ['ManifestVersion: 1.12.0', 'ManifestType: version',
+            self.assertEqual(3, text.count('ManifestVersion: 1.28.0'))
+            self.assertIn(f"PrivacyUrl: 'https://github.com/PlotnikovDL/tjcloud-client/blob/v{version}/PRIVACY.md'", text)
+            self.assertTrue((ROOT / 'PRIVACY.md').is_file())
+            for expected in ['ManifestType: version',
                              'ManifestType: defaultLocale', 'ManifestType: installer',
                              'Scope: user', 'InstallerType: inno', 'AppsAndFeaturesEntries:',
                              '12ca27e9-70d7-48f0-b0ac-350146b5578a}_is1']:

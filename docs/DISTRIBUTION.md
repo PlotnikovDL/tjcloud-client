@@ -2,9 +2,9 @@
 
 ## Текущий статус
 
-Репозиторий содержит рабочие инструменты сборки и подготовки манифестов. GitHub Release пока не опубликован, пакет в WinGet отсутствует. Отправка в `microsoft/winget-pkgs` и рассмотрение Microsoft выполняются отдельно.
+Готовые установщики, portable ZIP и контрольные суммы публикуются в [GitHub Releases](https://github.com/PlotnikovDL/tjcloud-client/releases). Подача манифеста в `microsoft/winget-pkgs` и рассмотрение Microsoft выполняются после выпуска.
 
-До первого релиза используйте последний успешный запуск [Windows build](https://github.com/PlotnikovDL/tjcloud-client/actions/workflows/ci.yml) для `develop`, раздел Artifacts, архив `windows-packages`. Требуется вход в GitHub. Артефакты хранятся 14 дней. Это сборки CI, не стабильный Release. [Пошаговая инструкция скачивания](../README.md#как-скачать).
+Для проверки до выпуска выберите успешный [Windows build для master](https://github.com/PlotnikovDL/tjcloud-client/actions/workflows/ci.yml?query=branch%3Amaster) и скачайте артефакт `windows-packages`. Требуется вход в GitHub. Артефакты хранятся 14 дней. [Инструкция по скачиванию](../README.md#как-скачать).
 
 - Издатель: `TJCloud`.
 - Название: `TJ Cloud Client`.
@@ -78,8 +78,8 @@ $url = "$($metadata.RepositoryUrl)/releases/download/v$($metadata.Version)/$($me
 winget validate --manifest "./artifacts/winget-1/manifests/t/TJCloud/Client/$($metadata.Version)" --disable-interactivity
 ```
 
-Генератор требует точную версию и URL assets своего репозитория, скачивает опубликованный установщик и сравнивает SHA-256 с локальным файлом. Он создаёт три YAML схемы 1.12.0. До появления настоящего релиза обычная генерация должна завершиться отказом.
+Генератор скачивает установщик по URL указанного выпуска, сравнивает его SHA-256 с локальным файлом и создаёт три YAML схемы 1.28.0. Политика конфиденциальности берётся из тега той же версии.
 
 Для проверки только схемы существует `-SchemaOnly`. Такие файлы явно помечены как тестовые. Их нельзя публиковать или отправлять в каталог. Успешный `winget validate` не подтверждает установку, доступность URL или регистрацию пакета.
 
-Перед отдельной отправкой нужны: публичный неизменяемый URL релиза, совпадающий SHA-256, проверка установки/обновления/удаления в чистой среде, актуальная проверка безопасности и Pull Request в каталог. См. [официальную процедуру Microsoft](https://learn.microsoft.com/en-us/windows/package-manager/package/repository).
+После публикации запускайте [Verify WinGet manifest](https://github.com/PlotnikovDL/tjcloud-client/actions/workflows/winget.yml) на теге выпуска. На временной Windows-машине он проверит манифест, установит пакет через WinGet, запустит клиент с тестовым профилем и проверит удаление. Артефакт `winget-manifests` содержит проверенные YAML для отдельного PR в каталог. См. [порядок подачи Microsoft](https://learn.microsoft.com/en-us/windows/package-manager/package/repository).
