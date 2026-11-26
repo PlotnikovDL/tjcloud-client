@@ -140,7 +140,7 @@ static class EngineTests
     }
     public static void PermanentErrors()
     {
-        foreach (var code in new[] { 400, 401, 403, 409, 413 })
+        foreach (var code in new[] { 400, 401, 403, 409 })
         {
             using var fixture = new Fixture();
             fixture.File("rphost_1/26112501.log", "synthetic");
@@ -156,6 +156,30 @@ static class EngineTests
             Assert.Equal(QueueState.Pending, queue.All()[1].State);
             Assert.Equal(1, server.Registrations);
         }
+    }
+    public static void ServerSizeLimit()
+    {
+        using var fixture = new Fixture();
+        const string first = "rphost_1/26112501.log";
+        fixture.File(first, "synthetic oversized file");
+        fixture.File("rphost_1/26112502.log", "x");
+        using var queue = new QueueStore(Path.Combine(fixture.Root, "queue.db"));
+        queue.Initialize(LogScanner.Scan(fixture.Root), InitialMode.ModifiedSince, DateTimeOffset.MinValue);
+        var server = new MemoryCollector();
+        server.Intercept = request => request.Method == HttpMethod.Put && server.Relative == first
+            ? new HttpResponseMessage(HttpStatusCode.RequestEntityTooLarge) : null;
+        using var http = new HttpClient(new Handler(server.Handle));
+        using var api = new CollectorClient("https://localhost", "synthetic", http);
+        var engine = new ClientEngine(fixture.Root, 1, queue, api);
+        engine.Run().GetAwaiter().GetResult();
+        var items = queue.All();
+        Assert.Equal(QueueState.Error, items[0].State);
+        Assert.Equal(0L, items[0].Offset);
+        Assert.True(items[0].UploadId != null && items[0].Error.Contains("лимит"));
+        Assert.Equal(QueueState.Delivered, items[1].State);
+        engine.Run().GetAwaiter().GetResult();
+        Assert.Equal(1, server.Completions);
+        Assert.Equal(2, server.Registrations);
     }
     public static void Cancellation()
     {

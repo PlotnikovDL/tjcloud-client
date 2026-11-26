@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$SetupPath,
-    [Parameter(Mandatory)][string]$PublishDirectory
+    [Parameter(Mandatory)][string]$PublishDirectory,
+    [string]$RestartProbeOldSetupPath,
+    [string]$RestartProbeSetupPath
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -9,6 +11,7 @@ if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hoste
     throw 'Only an ephemeral GitHub-hosted Windows runner may execute installer acceptance. Never run on a user workstation.'
 }
 . (Join-Path $PSScriptRoot 'Common.ps1')
+if (-not $RestartProbeOldSetupPath -or -not $RestartProbeSetupPath) { throw 'Hosted acceptance requires both synthetic restart probe installers.' }
 $metadata = Get-PackageMetadata
 $SetupPath = (Resolve-Path -LiteralPath $SetupPath).Path
 $PublishDirectory = (Resolve-Path -LiteralPath $PublishDirectory).Path
@@ -37,7 +40,7 @@ foreach ($source in Get-ChildItem -LiteralPath $PublishDirectory -File -Recurse)
     if (-not (Test-Path -LiteralPath $installed)) { throw "Installed payload is missing: $relative" }
     if ((Get-FileHash -LiteralPath $source.FullName).Hash -ne (Get-FileHash -LiteralPath $installed).Hash) { throw "Installed payload differs: $relative" }
 }
-& (Join-Path $PSScriptRoot 'Test-Smoke.ps1') -ExePath (Join-Path $destination 'TjCloudClient.exe')
+& (Join-Path $PSScriptRoot 'Test-Smoke.ps1') -ExePath (Join-Path $destination 'TjCloudClient.exe') -ExpectedMode installed
 $uninstall = Start-Process -FilePath (Join-Path $destination 'unins000.exe') -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -PassThru
 try {
     if (-not $uninstall.WaitForExit(120000)) { throw 'Uninstaller timed out on the runner.' }
@@ -54,3 +57,54 @@ if (Compare-Object $profileBefore $profileAfter) { throw 'Install, smoke or unin
 $startupAfter = if (Test-Path $runKey) { Get-ItemProperty $runKey | ConvertTo-Json -Compress } else { '' }
 if ($startupBefore -ne $startupAfter) { throw 'Install, smoke or uninstall changed autostart registration.' }
 Write-Host 'PASS runner-only install, registration, exact payload, native smoke, uninstall, profile preservation and unchanged autostart.'
+
+$probeDestination = Join-Path $env:RUNNER_TEMP 'restart-probe-app'
+$report = Join-Path $env:RUNNER_TEMP 'restart-probe.jsonl'
+if ((Test-Path $probeDestination) -or (Test-Path $report)) { throw 'Restart probe paths must be fresh.' }
+$oldReport = $env:TJCLIENT_RESTART_PROBE_REPORT
+$env:TJCLIENT_RESTART_PROBE_REPORT = $report
+function Invoke-ProbeSetup([string]$Path, [string[]]$ExtraArguments, [bool]$ExpectFailure = $false) {
+    $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/SP-', '/NORESTART', '/NOCLOSEAPPLICATIONS', '/NORESTARTAPPLICATIONS', '/NOICONS', "/DIR=`"$probeDestination`"") + $ExtraArguments
+    $process = Start-Process -FilePath $Path -ArgumentList $arguments -PassThru
+    try {
+        if (-not $process.WaitForExit(120000)) { throw 'Restart probe installer timed out.' }
+        if (($process.ExitCode -eq 0) -eq $ExpectFailure) { throw "Unexpected restart probe installer exit: $($process.ExitCode)" }
+    }
+    finally { $process.Dispose() }
+}
+try {
+    Invoke-ProbeSetup $RestartProbeOldSetupPath @()
+    if (Test-Path $report) { throw 'Old manual/silent probe installation launched a process.' }
+    if ((Get-ItemProperty $key).DisplayVersion -ne '0.0.1') { throw 'Old probe version was not installed.' }
+    Invoke-ProbeSetup $RestartProbeOldSetupPath @('/RESTARTCLIENT=0')
+    if (Test-Path $report) { throw 'Invalid restart request launched a process.' }
+    Invoke-ProbeSetup $RestartProbeOldSetupPath @('/RESTARTCLIENT=1', '/RESTARTCLIENT=1')
+    if (Test-Path $report) { throw 'Duplicated restart request launched a process.' }
+    $blocked = Join-Path $env:RUNNER_TEMP 'blocked-probe-target'
+    if (Test-Path $blocked) { throw 'Blocked install target must be fresh.' }
+    [IO.File]::WriteAllText($blocked, 'Synthetic file, not an installation directory.')
+    Invoke-ProbeSetup $RestartProbeSetupPath @('/RESTARTCLIENT=1', "/DIR=`"$blocked`"") $true
+    if (Test-Path $report) { throw 'Failed setup launched a process.' }
+    Invoke-ProbeSetup $RestartProbeSetupPath @('/RESTARTCLIENT=1')
+    $deadline = [DateTime]::UtcNow.AddSeconds(20)
+    while (-not (Test-Path $report) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100 }
+    if (-not (Test-Path $report)) { throw 'Guarded restart did not run. A pending reboot also intentionally blocks restart.' }
+    Start-Sleep -Milliseconds 500
+    $reports = @(Get-Content $report)
+    if ($reports.Count -ne 1) { throw 'Expected exactly one guarded restart.' }
+    $started = $reports[0] | ConvertFrom-Json
+    if ($started.executable -ne (Join-Path $probeDestination 'TjCloudClient.exe') -or $started.directory -ne $probeDestination) { throw 'Restart used the wrong executable or working directory.' }
+    if ((Get-ItemProperty $key).DisplayVersion -ne $metadata.Version) { throw 'New probe version was not installed.' }
+    $uninstall = Start-Process -FilePath (Join-Path $probeDestination 'unins000.exe') -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -PassThru
+    try {
+        if (-not $uninstall.WaitForExit(120000) -or $uninstall.ExitCode -ne 0) { throw 'Probe uninstall failed.' }
+    }
+    finally { $uninstall.Dispose() }
+    if ((Test-Path $key) -or (Test-Path (Join-Path $probeDestination 'TjCloudClient.exe'))) { throw 'Probe uninstall left its registration or executable.' }
+    $profileAfter = @(Get-ChildItem -LiteralPath $profile -File -Recurse | ForEach-Object { "$($_.FullName):$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)" })
+    if (Compare-Object $profileBefore $profileAfter) { throw 'Restart probe changed the synthetic profile.' }
+    $startupAfter = if (Test-Path $runKey) { Get-ItemProperty $runKey | ConvertTo-Json -Compress } else { '' }
+    if ($startupBefore -ne $startupAfter) { throw 'Restart probe changed autostart.' }
+    Write-Host 'PASS synthetic installer upgrade and guarded single restart, profile bytes and autostart preserved. This is not full client auto-update acceptance.'
+}
+finally { $env:TJCLIENT_RESTART_PROBE_REPORT = $oldReport }

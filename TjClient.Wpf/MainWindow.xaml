@@ -14,7 +14,7 @@
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
     <TextBlock Text="Доставка технологического журнала" FontSize="22" FontWeight="SemiBold" Foreground="#162B49" Margin="0,0,0,16"/>
     <StackPanel x:Name="SettingsPanel" Grid.Row="1">
-      <Grid>
+      <Grid x:Name="SourceSettings">
         <Grid.ColumnDefinitions><ColumnDefinition Width="145"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
         <TextBlock Text="Папка выгрузок" VerticalAlignment="Center" Margin="0,0,0,8"/>
@@ -24,7 +24,7 @@
       </Grid>
       <Expander x:Name="SettingsExpander" IsExpanded="False" Margin="0,12,0,0">
         <Expander.Header><StackPanel Orientation="Horizontal"><TextBlock Text="Настройки" FontWeight="SemiBold"/><TextBlock x:Name="ModeCaption" Foreground="#56657B" Margin="14,0,0,0"/></StackPanel></Expander.Header>
-        <Grid Margin="0,10,0,0">
+        <StackPanel><Grid x:Name="TransferSettings" Margin="0,10,0,0">
           <Grid.ColumnDefinitions><ColumnDefinition Width="145"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
           <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
           <TextBlock Text="Адрес сервиса" VerticalAlignment="Center" Margin="0,0,0,8"/><TextBox Grid.Column="1" x:Name="EndpointBox" Margin="0,0,0,8" ToolTip="https://имя-сервера без подпути, параметров и логина"/>
@@ -35,7 +35,7 @@
             <StackPanel Orientation="Horizontal"><RadioButton x:Name="SinceRadio" GroupName="InitialMode" Content="Существующие с датой изменения от" Height="32" VerticalContentAlignment="Center"/><DatePicker x:Name="SincePicker" Width="150" Height="32" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Margin="12,0,0,0"/></StackPanel>
           </StackPanel>
           <CheckBox Grid.Row="3" Grid.Column="1" x:Name="StartupBox" Content="Запускать при входе в Windows" ToolTip="Только для текущего пользователя. Автозапуск меняется только по нажатию этого флажка."/>
-        </Grid>
+        </Grid><CheckBox x:Name="AutoUpdateBox" Margin="145,6,0,0" Content="Автоматически обновлять клиент" ToolTip="Подписанные обновления из GitHub. Загрузка в фоне, безопасная остановка передачи и перезапуск. Можно отключить в любое время."/></StackPanel>
       </Expander>
     </StackPanel>
     <Grid Grid.Row="2" Margin="0,12,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="145"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="Получатель"/><TextBlock Grid.Column="1" x:Name="RecipientText" TextWrapping="Wrap" Foreground="#38577C"/></Grid>
@@ -47,9 +47,9 @@
       <Button x:Name="CheckButton" Content="Проверить" Click="CheckClick"/>
       <Button x:Name="StartButton" Content="Запустить" Click="StartClick" Background="#2459B5" Foreground="White"/>
       <Button x:Name="PauseButton" Content="Пауза" Click="PauseClick" Visibility="Collapsed" Background="#2459B5" Foreground="White"/>
-      <Button x:Name="MoreButton" Content="Ещё ▾" Click="MoreClick"><Button.ContextMenu><ContextMenu><MenuItem x:Name="SendButton" Header="Отправить сейчас" Click="SendClick"/><MenuItem x:Name="OpenButton" Header="Открыть сайт" Click="OpenClick"/><MenuItem x:Name="RetryButton" Header="Повторить выбранное" Click="RetryClick"/></ContextMenu></Button.ContextMenu></Button>
+      <Button x:Name="MoreButton" Content="Ещё ▾" Click="MoreClick"><Button.ContextMenu><ContextMenu><MenuItem x:Name="SendButton" Header="Отправить сейчас" Click="SendClick"/><MenuItem x:Name="OpenButton" Header="Открыть сайт" Click="OpenClick"/><MenuItem x:Name="RetryButton" Header="Повторить выбранное" Click="RetryClick"/><MenuItem x:Name="UpdateButton" Header="Проверить обновления" Click="UpdateClick"/></ContextMenu></Button.ContextMenu></Button>
     </StackPanel>
-    <StackPanel Grid.Row="5" Margin="0,0,0,10"><TextBlock x:Name="StatusText" Text="На паузе. Укажите параметры и нажмите «Проверить»." TextWrapping="Wrap" FontWeight="SemiBold"/><TextBlock x:Name="LastContactText" Text="Последняя успешная связь: нет" Foreground="#56657B" Margin="0,4,0,0"/></StackPanel>
+    <StackPanel Grid.Row="5" Margin="0,0,0,10"><TextBlock x:Name="StatusText" Text="На паузе. Укажите параметры и нажмите «Проверить»." TextWrapping="Wrap" FontWeight="SemiBold"/><TextBlock x:Name="LastContactText" Text="Последняя успешная связь: нет" Foreground="#56657B" Margin="0,4,0,0"/><TextBlock x:Name="UpdateStatusText" Foreground="#56657B" TextWrapping="Wrap" FontSize="12" Visibility="Collapsed" Margin="0,4,0,0"/></StackPanel>
     <DataGrid Grid.Row="6" x:Name="QueueGrid" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#EDF1F7" HeadersVisibility="Column" Background="White" BorderBrush="#C6D1E0" RowHeight="30" EnableRowVirtualization="True">
       <DataGrid.Columns><DataGridTextColumn Header="Файл" Binding="{Binding Path}" Width="*" MinWidth="150" ElementStyle="{StaticResource FileText}"/><DataGridTextColumn Header="Состояние" Binding="{Binding State}" Width="210" ElementStyle="{StaticResource QueueText}"/><DataGridTextColumn Header="Передано" Binding="{Binding Progress}" Width="175" ElementStyle="{StaticResource ProgressText}"/></DataGrid.Columns>
       <DataGrid.RowStyle><Style TargetType="DataGridRow"><Setter Property="ToolTip" Value="{Binding Details}"/></Style></DataGrid.RowStyle>
