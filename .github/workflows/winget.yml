@@ -68,7 +68,25 @@ jobs:
           }
           $install = [Diagnostics.Process]::Start($start)
           try {
-            if (!$install.WaitForExit(150000)) { throw 'WinGet installation timed out. See installer diagnostics.' }
+            if (!$install.WaitForExit(150000)) {
+              $output = New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/winget-diagnostics" -Force
+              Add-Type -AssemblyName UIAutomationClient
+              $desktop = [System.Windows.Automation.AutomationElement]::RootElement
+              $condition = [System.Windows.Automation.Condition]::TrueCondition
+              $windows = $desktop.FindAll([System.Windows.Automation.TreeScope]::Children, $condition)
+              foreach ($window in $windows) {
+                $owner = Get-Process -Id $window.Current.ProcessId -ErrorAction SilentlyContinue
+                if ($owner -and $owner.Name -match 'smart|consent|winget|TJCloud|ApplicationFrameHost|explorer') {
+                  $window.Current.Name | Out-File "$output/desktop.txt" -Append
+                  $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition) |
+                    ForEach-Object { $_.Current.Name } | Where-Object { $_ } | Out-File "$output/desktop.txt" -Append
+                }
+              }
+              Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'winget|TJCloudClient|\.tmp$|consent|smartscreen' } |
+                Select-Object ProcessId,ParentProcessId,SessionId,Name,ExecutablePath,CommandLine |
+                ConvertTo-Json | Set-Content "$output/before-timeout.json"
+              throw 'WinGet installation timed out. See installer diagnostics.'
+            }
             if ($install.ExitCode -ne 0) { throw "Manifest installation failed with exit code $($install.ExitCode)." }
           } finally { $install.Dispose() }
           $entry = Get-ItemProperty -LiteralPath $key
