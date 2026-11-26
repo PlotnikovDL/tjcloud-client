@@ -72,7 +72,7 @@ static class IntegrationHarness
                 try { await engine.Run(); }
                 catch (TransportException e) when (e.Transient) { Console.WriteLine("TRANSIENT_RETRY_PENDING"); }
                 var items = queue.All().Where(x => x.State != QueueState.Baseline).ToList();
-                if (items.Any(x => x.State is QueueState.ImportFailed or QueueState.Conflict or QueueState.Error or QueueState.Expired))
+                if (items.Any(x => x.State is QueueState.ImportFailed or QueueState.Conflict or QueueState.Error or QueueState.Expired or QueueState.ImportStatusUnavailable))
                 { Summary(items); return 2; }
                 if (items.Count == config.ExpectedFiles && items.All(x => config.RequireImported ? x.State == QueueState.Imported : x.State is QueueState.Delivered or QueueState.Importing or QueueState.Imported))
                 { Summary(items); return 0; }

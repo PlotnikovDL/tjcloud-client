@@ -11,6 +11,7 @@ using System.Windows;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using TjClient.Core;
+using TjClient.Updates;
 using Forms = System.Windows.Forms;
 
 namespace TjClient.Wpf;
@@ -32,8 +33,82 @@ public partial class MainWindow : Window
     private int failures;
     private DateTimeOffset nextCycle;
     private bool existingQueue;
+    private bool updateQuiescing;
+    private bool updateDrainFailed;
+    private bool startIntentPending;
+    private int activeOperations;
+    private TaskCompletionSource operationsDrained = CompletedDrain();
 
-    public MainWindow(string stateDirectory, bool smoke, Func<ClientProfile, CollectorClient>? createClient = null)
+    private static TaskCompletionSource CompletedDrain()
+    {
+        var source = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        source.SetResult();
+        return source;
+    }
+
+    // Leases cover the entire async UI operation, including queue/network disposal.
+    // busy alone is not a completion signal: Start/Retry may clear it between awaits.
+    private IDisposable? AdmitOperation()
+    {
+        Dispatcher.VerifyAccess();
+        if (updateQuiescing || exiting) return null;
+        if (activeOperations++ == 0)
+            operationsDrained = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        return new OperationLease(this);
+    }
+
+    private sealed class OperationLease(MainWindow owner) : IDisposable
+    {
+        private bool disposed;
+        public void Dispose()
+        {
+            if (disposed) return;
+            disposed = true;
+            if (--owner.activeOperations == 0) owner.operationsDrained.TrySetResult();
+        }
+    }
+
+    internal async Task<bool> PrepareForUpdateAsync(TimeSpan timeout, CancellationToken token)
+    {
+        Dispatcher.VerifyAccess();
+        if (updateQuiescing || exiting) return false;
+        updateQuiescing = true;
+        updateDrainFailed = false;
+        timer.Stop();
+        SetBusy(busy);
+        try
+        {
+            cancellation?.Cancel();
+            await operationsDrained.Task.WaitAsync(timeout, token);
+            if (busy || exiting || updateDrainFailed || startIntentPending || token.IsCancellationRequested) throw new OperationCanceledException();
+            return true;
+        }
+        catch
+        {
+            ResumeAfterUpdate();
+            return false;
+        }
+    }
+
+    internal void ResumeAfterUpdate()
+    {
+        Dispatcher.VerifyAccess();
+        updateQuiescing = false;
+        // Read the current intent, never restore a snapshot over a user pause/revocation.
+        running = profile.Running && !startIntentPending;
+        if (!exiting) timer.Start();
+        SetBusy(busy);
+    }
+
+    private void OperationFailed(Exception error, bool pause = false)
+    {
+        if (updateQuiescing && error is not OperationCanceledException) updateDrainFailed = true;
+        if (pause && !updateQuiescing) Pause();
+        StatusText.Text = Friendly(error);
+    }
+
+    public MainWindow(string stateDirectory, bool smoke, Func<ClientProfile, CollectorClient>? createClient = null,
+        Func<string, IUpdateLifetime, UpdateCoordinator>? createUpdates = null, Func<Task<bool>>? requestUpdateConsent = null)
     {
         this.stateDirectory = stateDirectory;
         this.smoke = smoke;
@@ -119,9 +194,11 @@ public partial class MainWindow : Window
         }
         SetBusy(false);
         UpdateRecipient();
+        ConfigureUpdates(createUpdates, requestUpdateConsent);
         Loaded += async (_, _) =>
         {
             if (smoke) { await Smoke(); return; }
+            BeginUpdates();
             if (profile.Running)
             {
                 try { profile.RequireConsent(); running = true; await Cycle(); }
@@ -166,6 +243,8 @@ public partial class MainWindow : Window
     private async void CheckClick(object sender, RoutedEventArgs e)
     {
         if (busy || running) return;
+        using var operation = AdmitOperation();
+        if (operation == null) return;
         SetBusy(true);
         checkedProfile = null; previewSnapshot = null;
         UpdateRecipient();
@@ -204,20 +283,27 @@ public partial class MainWindow : Window
             SaveProfile();
         }
         catch (OperationCanceledException) { StatusText.Text = "Проверка отменена. Передача не начиналась."; }
-        catch (Exception error) { StatusText.Text = Friendly(error); }
+        catch (Exception error) { OperationFailed(error); }
         finally { cancellation.Dispose(); cancellation = null; SetBusy(false); }
     }
     private async void StartClick(object sender, RoutedEventArgs e) => await Start(true);
-    private async void SendClick(object sender, RoutedEventArgs e) => await Start(running);
+    private async void SendClick(object sender, RoutedEventArgs e)
+    {
+        if (existingQueue && profile.ConsentBinding.Length != 0) await Cycle();
+        else await Start(running);
+    }
     private async Task Start(bool schedule)
     {
         if (busy) return;
+        using var operation = AdmitOperation();
+        if (operation == null) return;
         try
         {
             if (checkedProfile == null || previewSnapshot == null) throw new InvalidOperationException("Сначала нажмите «Проверить».");
             if (FinishedCheck.IsChecked != true || RecipientCheck.IsChecked != true) throw new InvalidOperationException("Нужно подтвердить завершённость файлов и передачу получателю.");
             profile = checkedProfile.Approve() with { Running = schedule, Startup = StartupBox.IsChecked == true };
             profile.RequireConsent();
+            startIntentPending = true;
             SetBusy(true);
             cancellation = new CancellationTokenSource();
             try
@@ -225,19 +311,23 @@ public partial class MainWindow : Window
                 var selected = profile;
                 var snapshot = previewSnapshot;
                 await Task.Run(() => { using var queue = OpenQueue(selected); queue.BeginObservation(selected.Folder, snapshot, selected.Mode, selected.Since); });
+                // Persist only after the baseline exists, using the latest intent (a Pause may have intervened).
+                existingQueue = true;
+                SaveProfile();
+                startIntentPending = false;
+                running = profile.Running;
                 cancellation.Token.ThrowIfCancellationRequested();
             }
             finally { cancellation.Dispose(); cancellation = null; SetBusy(false); }
-            existingQueue = true;
-            running = schedule;
-            SaveProfile();
             await Cycle();
         }
-        catch (Exception error) { StatusText.Text = Friendly(error); }
+        catch (Exception error) { OperationFailed(error); }
     }
     private async Task Cycle()
     {
         if (busy) return;
+        using var operation = AdmitOperation();
+        if (operation == null) return;
         SetBusy(true);
         cancellation = new CancellationTokenSource();
         var ct = cancellation.Token;
@@ -271,10 +361,11 @@ public partial class MainWindow : Window
         catch (OperationCanceledException) { StatusText.Text = "На паузе. Подтверждённые смещения сохранены."; }
         catch (TransportException error) when (error.Transient)
         {
+            if (updateQuiescing) updateDrainFailed = true;
             failures++;
             StatusText.Text = error.Message + " Повтор с ограниченной задержкой.";
         }
-        catch (Exception error) { Pause(); StatusText.Text = Friendly(error); }
+        catch (Exception error) { OperationFailed(error, pause: true); }
         finally
         {
             cancellation.Dispose(); cancellation = null;
@@ -294,6 +385,7 @@ public partial class MainWindow : Window
         running = false; cancellation?.Cancel();
         profile = profile with { Running = false };
         if (!loading) SaveProfile();
+        startIntentPending = false;
         StatusText.Text = "На паузе. Подтверждённые смещения сохранены.";
         if (!busy) SetBusy(false);
     }
@@ -311,15 +403,24 @@ public partial class MainWindow : Window
     private async void RetryClick(object sender, RoutedEventArgs e)
     {
         if (busy || QueueGrid.SelectedItem is not QueueRow row) return;
+        using var operation = AdmitOperation();
+        if (operation == null) return;
         try
         {
             profile.RequireConsent();
             using (var queue = OpenQueue(profile))
             {
                 var item = queue.All().Single(x => x.File.RelativePath == row.Path);
-                if (item.State is not (QueueState.Expired or QueueState.Error)) throw new InvalidOperationException("Повтор разрешён только для истёкшей передачи или исправленной ошибки. Конфликт нельзя перезаписать.");
-                if (MessageBox.Show(this, "Повторить выбранную передачу с прежней идентичностью файла? Истёкшая передача будет зарегистрирована заново.", "Явный повтор", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
-                if (item.UploadId == null || item.State == QueueState.Expired)
+                if (item.State is not (QueueState.Expired or QueueState.Error or QueueState.ImportStatusUnavailable)) throw new InvalidOperationException("Выберите истёкшую передачу, ошибку или файл с недоступным статусом импорта.");
+                var accepted = item.JobId != null;
+                if (accepted && item.UploadId == null)
+                    throw new InvalidOperationException($"Файл принят. Проверьте задание {item.JobId} на сайте.");
+                var question = accepted ? "Проверить статус импорта принятого файла?"
+                    : "Повторить выбранную передачу с прежней идентичностью файла? Истёкшая передача будет зарегистрирована заново.";
+                if (MessageBox.Show(this, question, "Явный повтор", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
+                if (updateQuiescing || exiting) return;
+                var registerAgain = !accepted && item.State == QueueState.Expired;
+                if (!accepted && (item.UploadId == null || registerAgain))
                 {
                     SetBusy(true);
                     cancellation = new CancellationTokenSource();
@@ -337,33 +438,33 @@ public partial class MainWindow : Window
                     }
                     finally { cancellation.Dispose(); cancellation = null; SetBusy(false); }
                 }
-                queue.Save(item with { State = item.JobId != null ? QueueState.Delivered : QueueState.Pending, UploadId = item.State == QueueState.Expired ? null : item.UploadId,
-                    Offset = item.State == QueueState.Expired ? 0 : item.Offset, Attempts = 0, NextAttemptTicks = 0, Error = "" });
+                queue.Save(item with { State = accepted ? QueueState.Delivered : QueueState.Pending, UploadId = registerAgain ? null : item.UploadId,
+                    Offset = registerAgain ? 0 : item.Offset, Attempts = 0, NextAttemptTicks = 0, Error = "" });
             }
             await Cycle();
         }
-        catch (Exception error) { StatusText.Text = Friendly(error); }
+        catch (Exception error) { OperationFailed(error); }
     }
     private QueueStore OpenQueue(ClientProfile value) => new(Path.Combine(stateDirectory, value.QueueKey + ".db"));
     private void SaveProfile() { if (!smoke) ProtectedStore.Save(settingsPath, profile); }
     private void UpdateModeAvailability()
     {
-        ModePanel.IsEnabled = !existingQueue && !busy && !running;
+        ModePanel.IsEnabled = !existingQueue && !busy && !running && !updateQuiescing;
         SincePicker.IsEnabled = ModePanel.IsEnabled && SinceRadio.IsChecked == true;
         ModeCaption.Text = existingQueue ? "Период очереди закреплён" : SinceRadio.IsChecked == true ? "Существующие по дате изменения" : "Только новые файлы";
     }
     private void SetBusy(bool value)
     {
         busy = value;
-        SettingsPanel.IsEnabled = !value && !running;
+        SourceSettings.IsEnabled = TransferSettings.IsEnabled = !value && !running && !updateQuiescing;
         UpdateModeAvailability();
-        CheckButton.IsEnabled = !value && !running;
-        StartButton.IsEnabled = !value && !running;
+        CheckButton.IsEnabled = !value && !running && !updateQuiescing;
+        StartButton.IsEnabled = !value && !running && !updateQuiescing;
         StartButton.Visibility = value || running ? Visibility.Collapsed : Visibility.Visible;
         PauseButton.Visibility = value || running ? Visibility.Visible : Visibility.Collapsed;
         PauseButton.Content = value && !running ? "Отменить" : "Пауза";
-        SendButton.IsEnabled = !value;
-        RetryButton.IsEnabled = !value && !running;
+        SendButton.IsEnabled = !value && !updateQuiescing;
+        RetryButton.IsEnabled = !value && !running && !updateQuiescing;
         tray.Text = running ? "TJ Cloud Client - наблюдение" : "TJ Cloud Client - на паузе";
     }
     private void ShowQueue(IReadOnlyList<QueueItem> items)
@@ -376,7 +477,8 @@ public partial class MainWindow : Window
     {
         QueueState.Baseline => "Существовал до наблюдения", QueueState.Pending => "Ожидает отправки", QueueState.Uploading => "Передаётся", QueueState.Retry => "Ожидает повтора",
         QueueState.Delivered => "Получено сервером", QueueState.Importing => "Импортируется", QueueState.Imported => "Импортировано", QueueState.ImportFailed => "Ошибка импорта",
-        QueueState.Expired => "Истекла - нужен повтор", QueueState.Conflict => "Конфликт - остановлено", _ => "Ошибка - остановлено"
+        QueueState.ImportStatusUnavailable => "Принято - статус импорта недоступен",
+        QueueState.Expired => "Истекла - нужен повтор", QueueState.Conflict => "Конфликт - остановлено", _ => "Ошибка файла"
     };
     private static string Friendly(Exception error) => error switch
     {
@@ -403,6 +505,8 @@ public partial class MainWindow : Window
     private void OnClosing(object? sender, CancelEventArgs e) { if (!exiting) { e.Cancel = true; Hide(); } }
     private async void Exit()
     {
+        exiting = true;
+        await DisposeUpdatesAsync();
         Pause();
         var wait = Stopwatch.StartNew();
         while (busy && wait.Elapsed < TimeSpan.FromSeconds(2)) await Task.Delay(50);
@@ -426,7 +530,8 @@ public partial class MainWindow : Window
         FinishedCheck.IsChecked = true;
         FolderBox.Text = @"C:\synthetic";
         ok &= FinishedCheck.IsChecked == false;
-        File.WriteAllText(Path.Combine(stateDirectory, "window-smoke.txt"), ok ? "PASS masked-token default-new startup-off origin-clears-token folder-clears-consent consent-revoked" : "FAIL");
+        var mode = UpdateProduction.IsInstalledCopy() ? "installed" : "portable";
+        File.WriteAllText(Path.Combine(stateDirectory, "window-smoke.txt"), ok ? $"PASS masked-token default-new startup-off origin-clears-token folder-clears-consent consent-revoked mode={mode}" : "FAIL");
         var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap((int)ActualWidth, (int)ActualHeight, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
         bitmap.Render(this);
         var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();

@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+env:
+  DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+
 jobs:
   build:
     uses: ./.github/workflows/ci.yml
@@ -15,34 +19,48 @@ jobs:
 
   release:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    environment: release
     runs-on: windows-2025
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: write
       id-token: write
       attestations: write
     steps:
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node 24
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Recheck protected tag ancestry
+        shell: pwsh
+        run: ./scripts/Test-BranchPolicy.ps1
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2, Node 24
         with:
           name: windows-packages
-          path: release
-      - name: Verify tag and downloaded checksums
+          path: unsigned
+          skip-decompress: false
+          digest-mismatch: error
+      - name: Prepare pinned public release tools
+        shell: pwsh
+        run: |
+          ./scripts/Build-ReleaseTools.ps1 -ArtifactsRoot "$env:RUNNER_TEMP/release-tools"
+          ./scripts/Get-AppCastGenerator.ps1 -ToolRoot "$env:RUNNER_TEMP/appcast-generator"
+      - name: Sign final installer and appcast after approval
         shell: pwsh
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
           BUILD_VERSION: ${{ needs.build.outputs.version }}
         run: |
-          if ($env:RELEASE_TAG -cne "v$env:BUILD_VERSION") { throw 'Release tag/version mismatch.' }
-          $lines = Get-Content ./release/SHA256SUMS.txt
-          if (@($lines).Count -ne 2) { throw 'Expected checksums for ZIP and setup.' }
-          foreach ($line in $lines) {
-            if ($line -cnotmatch '^([0-9a-f]{64})  (TJCloudClient-[0-9.]+-win-x64(?:-setup\.exe|\.zip))$') { throw 'Invalid checksum entry.' }
-            $hash = $Matches[1]
-            $path = Join-Path ./release $Matches[2]
-            if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $hash) { throw 'Artifact checksum mismatch.' }
-          }
-      - name: Attest verified release assets
+          if ($env:GITHUB_REF -cne "refs/tags/v$env:BUILD_VERSION") { throw 'Release tag/version mismatch.' }
+          ./scripts/New-ReleaseFeed.ps1 -InputDirectory ./unsigned -OutputDirectory ./release -GeneratorPath "$env:RUNNER_TEMP/appcast-generator/netsparkle-generate-appcast.exe" -VerifierDll "$env:RUNNER_TEMP/release-tools/bin/ReleaseTools/release/ReleaseTools.dll"
+      - name: Verify final signed release manifest
+        shell: pwsh
+        run: ./scripts/Test-ReleaseAssets.ps1 -Directory ./release -VerifierDll "$env:RUNNER_TEMP/release-tools/bin/ReleaseTools/release/ReleaseTools.dll"
+      - name: Attest all five final release assets
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
           subject-path: release/*
@@ -53,10 +71,21 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
+          . ./scripts/Common.ps1
+          $metadata = Get-PackageMetadata
+          $expected = @("$($metadata.ArtifactStem)-setup.exe", "$($metadata.ArtifactStem).zip", 'SHA256SUMS.txt', 'appcast.xml', 'appcast.xml.signature')
           $assets = @(Get-ChildItem ./release -File)
-          if ($assets.Count -ne 3) { throw 'Expected ZIP, setup and checksums only.' }
-          gh release create $env:RELEASE_TAG --verify-tag --title $env:RELEASE_TAG --notes 'Self-contained Windows x64 client. Unsigned application and installer. Verify SHA256SUMS.txt and the GitHub artifact attestations. This release is not a WinGet submission.' @($assets.FullName)
+          if ($assets.Count -ne 5 -or (Compare-Object @($expected | Sort-Object) @($assets.Name | Sort-Object))) { throw 'Expected exactly the five verified release assets.' }
+          ./scripts/Test-ReleaseAssets.ps1 -Directory ./release -VerifierDll "$env:RUNNER_TEMP/release-tools/bin/ReleaseTools/release/ReleaseTools.dll"
+          gh release create $env:RELEASE_TAG --verify-tag --title $env:RELEASE_TAG --latest --draft=false --prerelease=false --notes 'Self-contained Windows x64 client. Appcast and installer have Ed25519 update signatures. Authenticode is not configured. Verify SHA256SUMS.txt and artifact attestations. This is not a WinGet submission.' @($assets.FullName)
           if ($LASTEXITCODE -ne 0) { throw 'Release creation failed.' }
           $published = gh release view $env:RELEASE_TAG --json tagName,assets | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or $published.tagName -cne $env:RELEASE_TAG) { throw 'Release readback failed.' }
-          if (Compare-Object @($assets.Name | Sort-Object) @($published.assets.name | Sort-Object)) { throw 'Published assets do not match the verified distribution.' }
+          if (Compare-Object @($expected | Sort-Object) @($published.assets.name | Sort-Object)) { throw 'Published assets differ from the verified manifest.' }
+          $readback = "$env:RUNNER_TEMP/published-release"
+          gh release download $env:RELEASE_TAG --dir $readback
+          if ($LASTEXITCODE -ne 0) { throw 'Release download readback failed.' }
+          ./scripts/Test-ReleaseAssets.ps1 -Directory $readback -VerifierDll "$env:RUNNER_TEMP/release-tools/bin/ReleaseTools/release/ReleaseTools.dll"
+          foreach ($name in $expected) {
+            if ((Get-FileHash (Join-Path ./release $name)).Hash -cne (Get-FileHash (Join-Path $readback $name)).Hash) { throw 'Published release bytes changed.' }
+          }

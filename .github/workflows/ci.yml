@@ -4,6 +4,7 @@ on:
   push:
     branches: ['**']
   pull_request:
+    types: [opened, synchronize, reopened, edited]
   workflow_call:
     outputs:
       version:
@@ -13,8 +14,26 @@ on:
 permissions:
   contents: read
 
+env:
+  DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+
 jobs:
+  policy:
+    name: policy
+    runs-on: windows-2025
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node 24
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check PR route and release ancestry
+        shell: pwsh
+        run: ./scripts/Test-BranchPolicy.ps1
+
   build:
+    needs: policy
     runs-on: windows-2025
     timeout-minutes: 25
     outputs:
@@ -23,7 +42,7 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node 24
         with:
           persist-credentials: false
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
@@ -58,28 +77,65 @@ jobs:
           $zip = Get-ChildItem "$env:RUNNER_TEMP/packages/*.zip"
           if (@($zip).Count -ne 1) { throw 'Expected exactly one ZIP.' }
           Expand-Archive -LiteralPath $zip.FullName -DestinationPath "$env:RUNNER_TEMP/zip-probe/app"
-          ./scripts/Test-Smoke.ps1 -ExePath "$env:RUNNER_TEMP/zip-probe/app/TjCloudClient.exe"
-      - name: Ephemeral runner install and uninstall acceptance
+          ./scripts/Test-Smoke.ps1 -ExePath "$env:RUNNER_TEMP/zip-probe/app/TjCloudClient.exe" -ExpectedMode portable
+      - name: Test synthetic signing and compile restart probes
+        run: |
+          ./scripts/Build-ReleaseTools.ps1 -ArtifactsRoot "$env:RUNNER_TEMP/release-tools"
+          ./scripts/Get-AppCastGenerator.ps1 -ToolRoot "$env:RUNNER_TEMP/appcast-generator"
+          $setup = Get-ChildItem "$env:RUNNER_TEMP/packages/*-setup.exe"
+          if (@($setup).Count -ne 1) { throw 'Expected exactly one installer.' }
+          ./scripts/Test-ReleaseSigning.ps1 -SetupPath $setup.FullName -VerifierDll "$env:RUNNER_TEMP/release-tools/bin/ReleaseTools/release/ReleaseTools.dll" -WorkRoot "$env:RUNNER_TEMP/signing-tests" -GeneratorPath "$env:RUNNER_TEMP/appcast-generator/netsparkle-generate-appcast.exe"
+          ./scripts/New-InstallerProbe.ps1 -ToolsDirectory "$env:RUNNER_TEMP/release-tools/bin/ReleaseTools/release" -OutputDirectory "$env:RUNNER_TEMP/probe-old" -Version '0.0.1' -IsccPath "$env:RUNNER_TEMP/inno-6.7.4/compiler/ISCC.exe"
+          ./scripts/New-InstallerProbe.ps1 -ToolsDirectory "$env:RUNNER_TEMP/release-tools/bin/ReleaseTools/release" -OutputDirectory "$env:RUNNER_TEMP/probe-new" -Version '${{ steps.metadata.outputs.version }}' -IsccPath "$env:RUNNER_TEMP/inno-6.7.4/compiler/ISCC.exe"
+      - name: Test current and next release version fixtures
+        run: |
+          ./scripts/New-InstallerProbe.ps1 -ToolsDirectory "$env:RUNNER_TEMP/release-tools/bin/ReleaseTools/release" -OutputDirectory "$env:RUNNER_TEMP/version-probe-1.0.0" -Version '1.0.0' -IsccPath "$env:RUNNER_TEMP/inno-6.7.4/compiler/ISCC.exe"
+          ./scripts/New-InstallerProbe.ps1 -ToolsDirectory "$env:RUNNER_TEMP/release-tools/bin/ReleaseTools/release" -OutputDirectory "$env:RUNNER_TEMP/version-probe-1.0.1" -Version '1.0.1' -IsccPath "$env:RUNNER_TEMP/inno-6.7.4/compiler/ISCC.exe"
+          $env:RELEASE_TEST_TOOLS_DLL = "$env:RUNNER_TEMP/release-tools/bin/ReleaseTools/release/ReleaseTools.dll"
+          $env:RELEASE_TEST_DOTNET = (Get-Command dotnet).Source
+          $env:RELEASE_TEST_SETUP_1_0_0 = "$env:RUNNER_TEMP/version-probe-1.0.0/TJCloudClient-1.0.0-win-x64-setup.exe"
+          $env:RELEASE_TEST_SETUP_1_0_1 = "$env:RUNNER_TEMP/version-probe-1.0.1/TJCloudClient-1.0.1-win-x64-setup.exe"
+          $result = python -m unittest discover -s tests -p test_release_versions.py -v 2>&1
+          $code = $LASTEXITCODE
+          $result | Set-Content "$env:RUNNER_TEMP/release-version-tests.log"
+          $result | Write-Host
+          if ($code -ne 0 -or ($result -match 'skipped=')) { throw 'Release version regression failed or skipped.' }
+      - name: Hosted installer and synthetic restart acceptance
         run: |
           $setup = Get-ChildItem "$env:RUNNER_TEMP/packages/*-setup.exe"
           if (@($setup).Count -ne 1) { throw 'Expected exactly one installer.' }
-          ./scripts/Test-Installer.ps1 -SetupPath $setup.FullName -PublishDirectory "$env:RUNNER_TEMP/build-output/publish"
+          $newProbe = Get-ChildItem "$env:RUNNER_TEMP/probe-new/*-setup.exe"
+          if (@($newProbe).Count -ne 1) { throw 'Expected exactly one restart probe installer.' }
+          ./scripts/Test-Installer.ps1 -SetupPath $setup.FullName -PublishDirectory "$env:RUNNER_TEMP/build-output/publish" -RestartProbeOldSetupPath "$env:RUNNER_TEMP/probe-old/TJCloudClient-0.0.1-win-x64-setup.exe" -RestartProbeSetupPath $newProbe.FullName
+      - name: Hosted signed client update E2E
+        run: |
+          ./scripts/Test-AutoUpdateE2E.ps1 -ArtifactsRoot "$env:RUNNER_TEMP/updater-e2e" -IsccPath "$env:RUNNER_TEMP/inno-6.7.4/compiler/ISCC.exe"
       - name: Upload verified distribution
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2, Node 24
         with:
           name: windows-packages
+          archive: true
           path: ${{ runner.temp }}/packages/*
           if-no-files-found: error
           retention-days: 14
       - name: Upload native test and smoke evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2, Node 24
         with:
           name: windows-evidence
+          archive: true
           path: |
             ${{ runner.temp }}/build-output/native-tests.log
             ${{ runner.temp }}/build-output/gui-smoke/*
             ${{ runner.temp }}/zip-probe/gui-smoke/*
             ${{ runner.temp }}/gui-smoke/*
+            ${{ runner.temp }}/restart-probe.jsonl
+            ${{ runner.temp }}/release-version-tests.log
+            ${{ runner.temp }}/updater-e2e/hosted-result.json
+            ${{ runner.temp }}/updater-e2e/source-manifest.json
+            ${{ runner.temp }}/updater-e2e/preparation.json
+            ${{ runner.temp }}/updater-e2e/*.log
+            ${{ runner.temp }}/updater-e2e/*/*.json
+            ${{ runner.temp }}/updater-e2e/*/*.log
           if-no-files-found: warn
           retention-days: 14

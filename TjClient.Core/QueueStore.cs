@@ -1,7 +1,7 @@
 namespace TjClient.Core;
 
 public enum InitialMode { NewFiles, ModifiedSince }
-public enum QueueState { Baseline, Pending, Uploading, Retry, Delivered, Importing, Imported, ImportFailed, Expired, Conflict, Error }
+public enum QueueState { Baseline, Pending, Uploading, Retry, Delivered, Importing, Imported, ImportFailed, Expired, Conflict, Error, ImportStatusUnavailable }
 public sealed record QueueItem(LocalFile File, string Hash = "", string? UploadId = null, long Offset = 0, QueueState State = QueueState.Pending, long? JobId = null, int Attempts = 0, long NextAttemptTicks = 0, string Error = "");
 public sealed class QueueFullException() : IOException("Очередь заполнена. Предел - 10000 файлов, отправка остановлена.");
 
@@ -38,7 +38,16 @@ public sealed class QueueStore : IDisposable
         cmd.CommandText = "SELECT metadata FROM files ORDER BY path";
         using var rows = cmd.ExecuteReader();
         var result = new List<QueueItem>();
-        while (rows.Read()) result.Add(System.Text.Json.JsonSerializer.Deserialize<QueueItem>(rows.GetString(0))!);
+        while (rows.Read())
+        {
+            var item = System.Text.Json.JsonSerializer.Deserialize<QueueItem>(rows.GetString(0))!;
+            // Предыдущие версии могли сбросить идентификатор принятой передачи при ручном повторе.
+            if (item.JobId != null && (item.State == QueueState.Expired
+                || (item.State == QueueState.Delivered && item.UploadId == null)))
+                item = item with { State = QueueState.ImportStatusUnavailable, Offset = item.File.Size,
+                    Error = "Файл принят. Проверьте результат импорта на сайте." };
+            result.Add(item);
+        }
         return result;
     }
     public void BeginObservation(string root, IReadOnlyList<LocalFile> preview, InitialMode mode, DateTimeOffset? since)

@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([Parameter(Mandatory)][string]$ExePath)
+param([Parameter(Mandatory)][string]$ExePath, [ValidateSet('installed', 'portable')][string]$ExpectedMode)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $ExePath = (Resolve-Path -LiteralPath $ExePath).Path
@@ -35,7 +35,9 @@ try {
     if ($loadedRuntime -ne $runtime) { throw "Smoke did not load the bundled coreclr.dll: $loadedRuntime" }
     if (-not (Test-Path -LiteralPath $report)) { throw 'Smoke report is missing.' }
     if ((Get-Item -LiteralPath $report).LastWriteTimeUtc -lt $started) { throw 'Smoke report is stale.' }
-    if (-not (Get-Content -LiteralPath $report -Raw).StartsWith('PASS ')) { throw 'Smoke report did not pass.' }
+    $result = Get-Content -LiteralPath $report -Raw
+    if (-not $result.StartsWith('PASS ')) { throw 'Smoke report did not pass.' }
+    if ($ExpectedMode -and $result -notmatch "\bmode=$ExpectedMode\b") { throw "Expected $ExpectedMode updater mode. Got $result" }
     [ordered]@{
         ExeSha256 = (Get-FileHash -LiteralPath $ExePath -Algorithm SHA256).Hash
         CoreClrSha256 = (Get-FileHash -LiteralPath $runtime -Algorithm SHA256).Hash

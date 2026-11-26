@@ -16,12 +16,16 @@ public sealed class ClientEngine(string root, long sourceId, QueueStore queue, C
             ct.ThrowIfCancellationRequested();
             if (known.NextAttemptTicks > DateTimeOffset.UtcNow.UtcTicks) continue;
             try { Save(Apply(known, await api.Get(known.UploadId!, ct))); }
-            catch (TransportException error) { SaveTransportFailure(known, error); throw; }
+            catch (TransportException error)
+            {
+                SaveTransportFailure(known, error);
+                if (error.StatusCode is not (410 or 413)) throw;
+            }
         }
         var snapshot = LogScanner.Scan(root);
         queue.Discover(snapshot);
         var present = snapshot.Select(x => x.RelativePath).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var known in queue.All().Where(x => x.Hash.Length != 0 && x.State is QueueState.Delivered or QueueState.Importing or QueueState.Imported or QueueState.ImportFailed or QueueState.Expired))
+        foreach (var known in queue.All().Where(x => x.Hash.Length != 0 && x.State is QueueState.Delivered or QueueState.Importing or QueueState.Imported or QueueState.ImportFailed or QueueState.Expired or QueueState.ImportStatusUnavailable))
         {
             ct.ThrowIfCancellationRequested();
             if (!present.Contains(known.File.RelativePath)) continue;
@@ -46,7 +50,7 @@ public sealed class ClientEngine(string root, long sourceId, QueueStore queue, C
             catch (TransportException error)
             {
                 SaveTransportFailure(item, error);
-                throw;
+                if (error.StatusCode is not (410 or 413)) throw;
             }
         }
     }
@@ -90,9 +94,18 @@ public sealed class ClientEngine(string root, long sourceId, QueueStore queue, C
     {
         var saved = queue.All().Single(x => x.File.RelativePath == item.File.RelativePath);
         var attempts = saved.Attempts + 1;
-        var retry = DateTimeOffset.UtcNow.AddSeconds(Math.Min(900, 5 * Math.Pow(2, Math.Min(attempts - 1, 8))) + Random.Shared.NextDouble() * 2).UtcTicks;
-        Save(saved with { State = error.Transient ? (saved.State is QueueState.Delivered or QueueState.Importing ? saved.State : QueueState.Retry) : error.StatusCode == 409 ? QueueState.Conflict : error.StatusCode == 410 ? QueueState.Expired : QueueState.Error,
-            Attempts = attempts, NextAttemptTicks = error.Transient ? retry : 0, Error = error.Message });
+        var state = error.StatusCode switch
+        {
+            409 => QueueState.Conflict,
+            410 when saved.JobId != null => QueueState.ImportStatusUnavailable,
+            410 => QueueState.Expired,
+            _ when error.Transient => saved.JobId != null ? saved.State : QueueState.Retry,
+            _ => QueueState.Error
+        };
+        var nextAttempt = error.Transient
+            ? DateTimeOffset.UtcNow.AddSeconds(Math.Min(900, 5 * Math.Pow(2, Math.Min(attempts - 1, 8))) + Random.Shared.NextDouble() * 2).UtcTicks : 0;
+        Save(saved with { State = state, Attempts = attempts, NextAttemptTicks = nextAttempt,
+            Error = state == QueueState.ImportStatusUnavailable ? "Файл принят. Статус импорта недоступен." : error.Message });
     }
     private void Save(QueueItem item) { queue.Save(item); Progress?.Invoke(); }
     private static QueueItem Apply(QueueItem item, Upload upload)
