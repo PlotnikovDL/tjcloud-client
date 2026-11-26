@@ -126,7 +126,7 @@ public partial class MainWindow
         var more = (System.Windows.Controls.Button)FindName("MoreButton");
         more.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
         Assert.True(more.ContextMenu.IsOpen, "Ещё открывает нативное меню");
-        Assert.Equal(3, more.ContextMenu.Items.Count);
+        Assert.Equal(4, more.ContextMenu.Items.Count);
         more.ContextMenu.IsOpen = false;
     }
     internal void AssertModesAndDate()

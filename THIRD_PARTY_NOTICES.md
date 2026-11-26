@@ -7,6 +7,8 @@
 | Microsoft.Data.Sqlite, Microsoft.Data.Sqlite.Core | 10.0.10 | MIT |
 | System.Security.Cryptography.ProtectedData | 10.0.10 | MIT |
 | SQLitePCLRaw.bundle_e_sqlite3, core, lib.e_sqlite3, provider.e_sqlite3 | 2.1.14 | Apache-2.0 |
+| NetSparkleUpdater.SparkleUpdater | 3.1.0 | MIT |
+| NetSparkleUpdater.Chaos.NaCl | 0.9.4 | MIT |
 
 Self-contained Windows-сборка также содержит .NET Runtime и Windows Desktop Runtime. Условия Microsoft и уведомления о компонентах runtime сохранены в `licenses/` из пакетов runtime 10.0.10. При обновлении runtime обновляйте эти файлы вместе с версией.
 

@@ -17,7 +17,7 @@ public partial class App : Application
         try
         {
             profileLock = new ProfileLock(folder);
-            var window = new MainWindow(folder, smoke);
+            var window = CreateWindow(folder, smoke);
             if (smoke) window.ShowActivated = false;
             MainWindow = window;
             window.Show();
@@ -28,5 +28,7 @@ public partial class App : Application
             Shutdown(2);
         }
     }
+    internal static MainWindow CreateWindow(string folder, bool smoke) =>
+        new(folder, smoke, createUpdates: smoke ? null : UpdateProduction.Create);
     protected override void OnExit(ExitEventArgs e) { profileLock?.Dispose(); base.OnExit(e); }
 }

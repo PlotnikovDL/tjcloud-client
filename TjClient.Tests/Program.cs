@@ -1,5 +1,13 @@
 using TjClient.Core;
 
+// Test-only restart routing. Production WPF never recognizes this environment variable.
+if (args.Length == 2 && args[0] == "--updater-integration-version") return UpdaterIntegration.VersionContract(args[1]);
+if (args.Length == 2 && args[0] == "--updater-integration-guard") return UpdaterIntegration.GuardEntry(args[1]);
+if (args.Length == 2 && args[0] == "--updater-integration-server") return await UpdaterIntegration.Server(args[1]);
+if (args.Length == 2 && args[0] == "--updater-integration") return await UpdaterIntegration.Client(args[1]);
+if (args.Length == 0 && Environment.GetEnvironmentVariable(UpdaterIntegration.ConfigEnvironment) is { Length: > 0 } updaterConfig)
+    return await UpdaterIntegration.Client(updaterConfig);
+
 if (args.Length == 2 && args[0] == "--branding-exe") return TjClient.Wpf.BrandingTests.ExecutableIcon(args[1]);
 if (args.Length == 2 && args[0] == "--visual-compact") return await TjClient.Wpf.CompactVisuals.Run(args[1]);
 if (args.Length == 2 && args[0] == "--protect-config") return IntegrationHarness.Protect(args[1]);
@@ -52,6 +60,29 @@ tests.Add(("wpf_branding_tray_uses_custom_icon", TjClient.Wpf.BrandingTests.Tray
 tests.Add(("wpf_branding_icon_lives_until_actual_close", TjClient.Wpf.BrandingTests.IconLifetime));
 tests.Add(("wpf_branding_window_uses_multisize_icon", TjClient.Wpf.BrandingTests.WindowIcon));
 tests.Add(("wpf_branding_title_shows_assembly_version", TjClient.Wpf.BrandingTests.WindowVersion));
+tests.Add(("updater_wpf_real_https_drain_preserves_observation_profile_queue", TjClient.Wpf.UpdateStopTests.RealDrain));
+tests.Add(("updater_wpf_dispatcher_exit_guard_preserves_running_or_paused", TjClient.Wpf.UpdateStopTests.DispatcherExitPreservesIntent));
+tests.Add(("updater_consent_saved_once_separate_no_network_until_enabled", UpdateConsentTests.ConsentIsSeparateAndOffline));
+tests.Add(("updater_consent_revocation_cancels_and_serializes_checks", UpdateConsentTests.RevocationSerializes));
+tests.Add(("updater_consent_corruption_offline_failure_never_success", UpdateConsentTests.FailureIsNotSuccess));
+tests.Add(("updater_consent_disposal_bounded_without_premature_resource_dispose", UpdateConsentTests.BoundedDispose));
+tests.Add(("updater_consent_revocation_detaches_authorization_generation", UpdateConsentTests.RevocationDetachesGeneration));
+tests.Add(("updater_ui_consent_checkbox_manual_separate_and_visible", TjClient.Wpf.UpdateUiTests.Surface));
+tests.Add(("updater_ui_production_factory_and_smoke_isolation", TjClient.Wpf.UpdateUiTests.ProductionWiring));
+tests.Add(("updater_harness01_production_authorization_connected", UpdaterHarnessRegressionTests.AuthorizationConnected));
+tests.Add(("updater_harness01_signed_tamper_download_rejected", UpdaterHarnessRegressionTests.TamperRejected));
+tests.Add(("updater_handoff01_terminal_before_ready_prevents_close", RuntimeRegressionTests.TerminalBeforeReady));
+tests.Add(("updater_handoff01_terminal_before_commit_prevents_close", RuntimeRegressionTests.TerminalBeforeCommit));
+tests.Add(("updater_runtime03_shell_free_harmless_actual_argv_and_abort", RuntimeRegressionTests.ShellFreeArguments));
+tests.Add(("updater_runtime_revoke_save_failure_explains_restart_limit", RuntimeRegressionTests.RevokeSaveFailure));
+tests.Add(("updater_runtime02_start_during_drain_persists_initialized_latest_intent", TjClient.Wpf.UpdateStopTests.StartDuringDrain));
+tests.Add(("updater_runtime01_cancellation_during_final_signature_never_launches", SignedUpdateTests.LateCancellation));
+tests.Add(("updater_runtime01_close_failure_retains_unconfirmed_handoff", SignedUpdateTests.FailedCloseRetainsOwnership));
+tests.Add(("updater_signed_backend_download_drain_verified_launch", SignedUpdateTests.ValidUpdate));
+tests.Add(("updater_signed_rejects_invalid_signature_feed_source_os_channel_version", SignedUpdateTests.RejectInvalidUpdates));
+tests.Add(("updater_signed_prepare_fail_closed_and_second_signature", SignedUpdateTests.DrainFailuresAndReverification));
+tests.Add(("updater_wpf_timeout_abort_keeps_latest_pause_intent", TjClient.Wpf.UpdateStopTests.TimeoutAndPause));
+tests.Add(("updater_wpf_exception_aborts_without_persisting_pause", TjClient.Wpf.UpdateStopTests.FailedDrain));
 tests.Add(("wpf_check_pause_bounded_exit_and_explicit_oversize_retry", TjClient.Wpf.WindowTests.Cancellation));
 var failed = 0;
 var selectedTests = tests.Where(t => args.Length == 0 || t.Name.Contains(args[0], StringComparison.Ordinal)).ToList();

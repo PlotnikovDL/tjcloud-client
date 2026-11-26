@@ -13,6 +13,8 @@
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="../TjClient.Core/TjClient.Core.csproj" /></ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="../TjClient.Updates/TjClient.Updates.csproj" />
+    <EmbeddedResource Include="Updates/UpdatePublicKey.txt" LogicalName="TjCloudClient.Updates.PublicKey" />
     <EmbeddedResource Include="Assets/tjcloud-client.ico" LogicalName="TjCloudClient.Branding.Icon" />
   </ItemGroup>
 </Project>

@@ -20,7 +20,7 @@ class BuildContracts(unittest.TestCase):
         self.assertEqual('$(MSBuildThisFileDirectory)artifacts', values['ArtifactsPath'])
         self.assertEqual('true', values['TreatWarningsAsErrors'])
         self.assertEqual('true', values['RestorePackagesWithLockFile'])
-        self.assertEqual('0.1.0', values['Version'])
+        self.assertEqual('1.0.1', values['Version'])
         self.assertEqual('TJCloud', values['Company'])
         self.assertEqual('TJ Cloud Client', values['Product'])
         self.assertEqual('https://github.com/PlotnikovDL/tjcloud-client', values['RepositoryUrl'])
@@ -47,8 +47,17 @@ class BuildContracts(unittest.TestCase):
                      'AppName={#ProductName}', 'AppVersion={#AppVersion}',
                      'AppPublisher={#Publisher}', 'ArchitecturesAllowed=x64compatible']:
             self.assertIn(line, text)
-        for section in ['[Run]', '[UninstallRun]', '[UninstallDelete]', '[Registry]', '[InstallDelete]']:
+        for section in ['[UninstallRun]', '[UninstallDelete]', '[Registry]', '[InstallDelete]']:
             self.assertNotIn(section, text)
+        self.assertIn('[Run]', text)
+        self.assertIn('Filename: "{app}\\TjCloudClient.exe"; WorkingDir: "{app}"; Flags: nowait runasoriginaluser; Check: ShouldRestartClient', text)
+        self.assertIn("ParamStr(I) = '/RESTARTCLIENT=1'", text)
+        self.assertIn('function ShouldRestartClient: Boolean;', text)
+        self.assertIn('function NeedRestart: Boolean;', text)
+        self.assertIn('PendingFileRenameOperations', text)
+        self.assertNotIn('skipifsilent', text)
+        self.assertNotIn('postinstall', text)
+        self.assertNotIn('Parameters:', text)
         self.assertRegex(text, r'AppId=\{\{[0-9A-Fa-f-]{36}\}')
 
     def test_package_rejects_incomplete_publish_before_creating_output(self):
@@ -63,13 +72,14 @@ class BuildContracts(unittest.TestCase):
     def test_winget_generator_hashes_file_and_emits_three_schema_files(self):
         script = ROOT / 'scripts' / 'New-WinGetManifest.ps1'
         self.assertTrue(script.is_file(), 'WinGet generator is required')
+        version = ElementTree.parse(ROOT / 'Directory.Build.props').find('./PropertyGroup/Version').text
         with tempfile.TemporaryDirectory(prefix='.packaging-tests-', dir=ROOT) as folder:
-            fixture = Path(folder) / 'TJCloudClient-0.1.0-win-x64-setup.exe'
+            fixture = Path(folder) / f'TJCloudClient-{version}-win-x64-setup.exe'
             # A genuine PE executable used only as a hash/schema fixture, not an application installer.
             shutil.copyfile(sys.executable, fixture)
             output = Path(folder) / 'manifests'
-            url = 'https://github.com/PlotnikovDL/tjcloud-client/releases/download/v0.1.0/' + fixture.name
-            result = run_ps_file(script, '-InstallerPath', str(fixture), '-Version', '0.1.0',
+            url = f'https://github.com/PlotnikovDL/tjcloud-client/releases/download/v{version}/' + fixture.name
+            result = run_ps_file(script, '-InstallerPath', str(fixture), '-Version', version,
                                  '-InstallerUrl', url, '-OutputDirectory', str(output), '-SchemaOnly')
             self.assertEqual(0, result.returncode, result.stdout + result.stderr)
             files = sorted(output.rglob('*.yaml'))
@@ -86,14 +96,15 @@ class BuildContracts(unittest.TestCase):
     def test_winget_generator_rejects_invalid_version_url_or_binary(self):
         script = ROOT / 'scripts' / 'New-WinGetManifest.ps1'
         self.assertTrue(script.is_file(), 'WinGet generator is required')
+        version = ElementTree.parse(ROOT / 'Directory.Build.props').find('./PropertyGroup/Version').text
         with tempfile.TemporaryDirectory(prefix='.packaging-tests-', dir=ROOT) as folder:
-            fixture = Path(folder) / 'TJCloudClient-0.1.0-win-x64-setup.exe'
+            fixture = Path(folder) / f'TJCloudClient-{version}-win-x64-setup.exe'
             fixture.write_bytes(b'not an installer')
-            canonical = 'https://github.com/PlotnikovDL/tjcloud-client/releases/download/v0.1.0/' + fixture.name
-            cases = [('0.1.0', canonical), ('0.1.1', canonical), ('01.1.0', canonical),
-                     ('0.1.0', canonical.replace('https:', 'http:')),
-                     ('0.1.0', canonical + '?token=synthetic'),
-                     ('0.1.0', canonical.replace('github.com', 'github.com.example.org'))]
+            canonical = f'https://github.com/PlotnikovDL/tjcloud-client/releases/download/v{version}/' + fixture.name
+            cases = [(version, canonical), ('0.1.1', canonical), ('01.1.0', canonical),
+                     (version, canonical.replace('https:', 'http:')),
+                     (version, canonical + '?token=synthetic'),
+                     (version, canonical.replace('github.com', 'github.com.example.org'))]
             for index, (version, url) in enumerate(cases):
                 with self.subTest(version=version, url=url):
                     output = Path(folder) / str(index)
