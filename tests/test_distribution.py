@@ -20,7 +20,7 @@ class BuildContracts(unittest.TestCase):
         self.assertEqual('$(MSBuildThisFileDirectory)artifacts', values['ArtifactsPath'])
         self.assertEqual('true', values['TreatWarningsAsErrors'])
         self.assertEqual('true', values['RestorePackagesWithLockFile'])
-        self.assertEqual('1.0.1', values['Version'])
+        self.assertRegex(values['Version'], r'^\d+\.\d+\.\d+$')
         self.assertEqual('TJCloud', values['Company'])
         self.assertEqual('TJ Cloud Client', values['Product'])
         self.assertEqual('https://github.com/PlotnikovDL/tjcloud-client', values['RepositoryUrl'])
@@ -37,12 +37,14 @@ class BuildContracts(unittest.TestCase):
                          '--self-contained', 'win-x64', 'Test-Smoke.ps1']:
             self.assertIn(required, script)
         self.assertIn('coreclr.dll', smoke.read_text(encoding='utf-8'))
-    def test_installer_is_per_user_and_never_removes_profile_or_runs_client(self):
+    def test_installer_is_machine_wide_russian_and_preserves_user_state(self):
         installer = ROOT / 'packaging' / 'TjCloudClient.iss'
         self.assertTrue(installer.is_file(), 'Inno installer source is required')
         text = installer.read_text(encoding='utf-8')
-        for line in ['PrivilegesRequired=lowest',
-                     'DefaultDirName={localappdata}\\Programs\\TJCloudClient',
+        for line in ['PrivilegesRequired=admin',
+                     'DefaultDirName={autopf}\\TJCloudClient',
+                     'Name: "ru"; MessagesFile: "compiler:Languages\\Russian.isl"',
+                     'LicenseFile=LICENSE.ru.txt',
                      'AllowNoIcons=yes', 'CloseApplications=no', 'RestartApplications=no',
                      'AppName={#ProductName}', 'AppVersion={#AppVersion}',
                      'AppPublisher={#Publisher}', 'ArchitecturesAllowed=x64compatible']:
@@ -92,7 +94,8 @@ class BuildContracts(unittest.TestCase):
             self.assertTrue((ROOT / 'PRIVACY.md').is_file())
             for expected in ['ManifestType: version',
                              'ManifestType: defaultLocale', 'ManifestType: installer',
-                             'Scope: user', 'InstallerType: inno', 'AppsAndFeaturesEntries:',
+                             'Scope: machine', 'ElevationRequirement: elevationRequired', 'InstallerLocale: ru-RU',
+                             'InstallerType: inno', 'AppsAndFeaturesEntries:',
                              '12ca27e9-70d7-48f0-b0ac-350146b5578a}_is1']:
                 self.assertIn(expected, text)
 

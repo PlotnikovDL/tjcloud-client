@@ -12,7 +12,7 @@ internal static class UpdateProduction
         const string uninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\{12ca27e9-70d7-48f0-b0ac-350146b5578a}_is1";
         try
         {
-            using var registration = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(uninstallKey);
+            using var registration = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(uninstallKey);
             return IsInstalledDirectory(registration?.GetValue("InstallLocation") as string);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Security.SecurityException)

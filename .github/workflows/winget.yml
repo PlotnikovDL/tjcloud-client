@@ -22,8 +22,19 @@ jobs:
         run: |
           $winget = Get-Command winget -ErrorAction SilentlyContinue
           if (!$winget -or [version]((winget --version).TrimStart('v')) -lt [version]'1.28.0') {
-            Install-Module Microsoft.WinGet.Client -RequiredVersion 1.29.380 -Repository PSGallery -Scope CurrentUser -Force
-            Repair-WinGetPackageManager -Version 1.29.380 -AllUsers -ErrorAction Stop
+            $tools = Join-Path $env:RUNNER_TEMP 'winget-client'
+            $bundle = 'Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle'
+            $dependencies = 'DesktopAppInstaller_Dependencies.zip'
+            gh release download v1.29.380 --repo microsoft/winget-cli --pattern $bundle --pattern $dependencies --dir $tools
+            if ($LASTEXITCODE) { throw 'Microsoft WinGet download failed.' }
+            $bundlePath = Join-Path $tools $bundle
+            $zipPath = Join-Path $tools $dependencies
+            if ((Get-FileHash $bundlePath).Hash -ine '65dea9c01ce08ee7b763366b27c0e651f97db857c11ca9b9c301826c10092f2e' -or
+                (Get-FileHash $zipPath).Hash -ine 'ba875afe9d190f61218985ac0292a99d1db710bf93e13c68944ca9d89f0d82d1') { throw 'WinGet file checksum mismatch.' }
+            Expand-Archive -LiteralPath $zipPath -DestinationPath "$tools/dependencies"
+            $packages = @(Get-ChildItem -LiteralPath "$tools/dependencies/x64" -File | Where-Object Extension -in '.appx', '.msix')
+            if (!$packages.Count) { throw 'Missing x64 WinGet dependencies.' }
+            Add-AppxPackage -Path $bundlePath -DependencyPath $packages.FullName -ErrorAction Stop
           }
           winget --version
           if ($LASTEXITCODE) { throw 'WinGet is unavailable.' }
@@ -47,16 +58,17 @@ jobs:
           $manifest = Join-Path $manifestRoot "manifests/t/TJCloud/Client/$($metadata.Version)"
           winget validate --manifest $manifest --disable-interactivity
           if ($LASTEXITCODE) { throw 'Manifest validation failed.' }
-          $key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$($metadata.ProductCode)"
+          $key = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$($metadata.ProductCode)"
           if (Test-Path -LiteralPath $key) { throw 'The test requires a clean runner.' }
           winget install --manifest $manifest --silent --accept-source-agreements --disable-interactivity
           if ($LASTEXITCODE) { throw 'Manifest installation failed.' }
           $entry = Get-ItemProperty -LiteralPath $key
+          if ($entry.InstallLocation.TrimEnd('\') -ine (Join-Path $env:ProgramFiles 'TJCloudClient')) { throw 'Unexpected installation path.' }
           if ($entry.DisplayName -cne $metadata.Product -or $entry.DisplayVersion -cne $metadata.Version -or $entry.Publisher -cne $metadata.Publisher) {
             throw 'Installed package registration differs from the manifest.'
           }
           $exe = Join-Path $entry.InstallLocation 'TjCloudClient.exe'
-          ./scripts/Test-Smoke.ps1 -ExePath $exe -ExpectedMode installed
+          ./scripts/Test-Smoke.ps1 -ExePath $exe -ExpectedMode installed -ReportDirectory "$env:RUNNER_TEMP/gui-smoke"
           winget uninstall --manifest $manifest --silent --accept-source-agreements --disable-interactivity
           if ($LASTEXITCODE -or (Test-Path -LiteralPath $key) -or (Test-Path -LiteralPath $exe)) { throw 'Manifest uninstall failed.' }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
