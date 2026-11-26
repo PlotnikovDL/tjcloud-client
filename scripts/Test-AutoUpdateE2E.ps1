@@ -76,8 +76,8 @@ foreach ($version in @('0.9.0', $newVersion)) {
 @{ status = 'PREPARED_NOT_EXECUTED'; bootstrap = 'TjClient.Tests with linked production WPF/Core/Updates'; installerExecuted = $false } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'preparation.json')
 if ($PrepareOnly) { Write-Host 'PREPARED_NOT_EXECUTED: no installer was run.'; return }
 
-$key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$($metadata.ProductCode)"
-$defaultInstall = Join-Path $env:LOCALAPPDATA 'Programs/TJCloudClient'
+$key = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$($metadata.ProductCode)"
+$defaultInstall = Join-Path $env:ProgramFiles 'TJCloudClient'
 if ((Test-Path -LiteralPath $key) -or (Test-Path -LiteralPath $defaultInstall) -or (Get-Process -Name TjCloudClient -ErrorAction SilentlyContinue)) { throw 'Unexpected existing client or registration. Nothing will be stopped or overwritten.' }
 function Wait-Record([string]$Path, [int]$Seconds = 120) {
     $until = [DateTime]::UtcNow.AddSeconds($Seconds)

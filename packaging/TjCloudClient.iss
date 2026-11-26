@@ -13,11 +13,11 @@ AppUpdatesURL={#RepositoryUrl}/releases
 VersionInfoVersion={#AppVersion}.0
 VersionInfoProductName={#ProductName}
 VersionInfoProductVersion={#AppVersion}
-DefaultDirName={localappdata}\Programs\TJCloudClient
+DefaultDirName={autopf}\TJCloudClient
 DefaultGroupName={#ProductName}
 DisableProgramGroupPage=yes
 AllowNoIcons=yes
-PrivilegesRequired=lowest
+PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.17763
@@ -32,7 +32,16 @@ AlwaysRestart=no
 RestartIfNeededByRun=no
 UninstallDisplayName={#ProductName}
 UninstallDisplayIcon={app}\TjCloudClient.exe
-LicenseFile={#PublishDirectory}\LICENSE
+ShowLanguageDialog=no
+LicenseFile=LICENSE.ru.txt
+
+[Languages]
+Name: "ru"; MessagesFile: "compiler:Languages\Russian.isl"
+
+[Messages]
+SetupWindowTitle=Установка - %1
+UninstallAppFullTitle=Удаление - %1
+ButtonOK=ОК
 
 [Files]
 Source: "{#PublishDirectory}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -62,6 +71,21 @@ var
   ParentWaitChecked: Boolean;
   ParentWaitResult: String;
 
+const
+  UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{12ca27e9-70d7-48f0-b0ac-350146b5578a}_is1';
+  LegacyMessage = 'Закройте клиент и удалите прежнюю версию для текущего пользователя через параметры Windows. Профиль и очередь сохранятся. Затем снова запустите этот установщик.';
+
+procedure CancelButtonClick(CurPageID: Integer; var Cancel, Confirm: Boolean);
+begin
+  if Cancel and Confirm and not WizardSilent then
+  begin
+    Confirm := False;
+    Cancel := TaskDialogMsgBox('Выйти из программы установки?',
+      'Установка ещё не завершена. Вы можете продолжить сейчас или запустить установщик позже.',
+      mbConfirmation, MB_YESNO, ['Да, выйти', 'Нет, продолжить установку'], 0) = IDYES;
+  end;
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   I, PidCount, StartCount, Pid, Waited: Integer;
@@ -76,7 +100,7 @@ begin
     Exit;
   end;
   ParentWaitChecked := True;
-  ParentWaitResult := 'Update handoff was not authorized. Close the client and run Setup manually.';
+  ParentWaitResult := 'Клиент не подтвердил готовность к обновлению. Закройте клиент и запустите установщик ещё раз.';
   Result := ParentWaitResult;
   PidCount := 0;
   StartCount := 0;
@@ -99,8 +123,9 @@ begin
   { Manual and WinGet installs without the updater flags retain their existing behavior. }
   if (PidCount = 0) and (StartCount = 0) then
   begin
-    ParentWaitResult := '';
-    Result := '';
+    if RegKeyExists(HKCU, UninstallKey) then ParentWaitResult := LegacyMessage
+    else ParentWaitResult := '';
+    Result := ParentWaitResult;
     Exit;
   end;
   if (PidCount <> 1) or (StartCount <> 1) then Exit;
@@ -114,6 +139,12 @@ begin
   ParentStopped := OpenEvent($100002, False, EventPrefix + 'Stopped');
   try
     if (ParentReady = 0) or (ParentAbort = 0) or (ParentStopped = 0) then Exit;
+    if not RegKeyExists(HKLM, UninstallKey) or RegKeyExists(HKCU, UninstallKey) then
+    begin
+      ParentWaitResult := LegacyMessage;
+      Result := ParentWaitResult;
+      Exit;
+    end;
     ParentProcess := OpenProcess($101000, False, Pid);
     if ParentProcess = 0 then Exit;
     if not GetProcessTimes(ParentProcess, Creation, ExitTime, Kernel, User) then Exit;

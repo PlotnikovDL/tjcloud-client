@@ -77,7 +77,7 @@ jobs:
           $assets = @(Get-ChildItem ./release -File)
           if ($assets.Count -ne 5 -or (Compare-Object @($expected | Sort-Object) @($assets.Name | Sort-Object))) { throw 'Expected exactly the five verified release assets.' }
           ./scripts/Test-ReleaseAssets.ps1 -Directory ./release -VerifierDll "$env:RUNNER_TEMP/release-tools/bin/ReleaseTools/release/ReleaseTools.dll"
-          gh release create $env:RELEASE_TAG --verify-tag --title $env:RELEASE_TAG --latest --draft=false --prerelease=false --notes 'Self-contained Windows x64 client. Appcast and installer have Ed25519 update signatures. Authenticode is not configured. Verify SHA256SUMS.txt and artifact attestations. This is not a WinGet submission.' @($assets.FullName)
+          gh release create $env:RELEASE_TAG --verify-tag --title $env:RELEASE_TAG --latest --draft=false --prerelease=false --notes-file packaging/release-notes.ru.md @($assets.FullName)
           if ($LASTEXITCODE -ne 0) { throw 'Release creation failed.' }
           $published = gh release view $env:RELEASE_TAG --json tagName,assets | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or $published.tagName -cne $env:RELEASE_TAG) { throw 'Release readback failed.' }
