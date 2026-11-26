@@ -248,6 +248,37 @@ foreach ($command in $commands) {
         self.assertIn('getWindow()).LaunchAsync(launch, token)', client)
         self.assertIn('getWindow()).CloseAsync(commit, token)', client)
 
+    def test_observed_process_keeps_exit_code_after_exit(self):
+        probe = r'''
+$ErrorActionPreference = 'Stop'
+$tokens = $null; $errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile($env:E2E_SOURCE, [ref]$tokens, [ref]$errors)
+$helper = $ast.Find({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Open-ObservedProcess' }, $true)
+. ([scriptblock]::Create($helper.Extent.Text))
+$info = [Diagnostics.ProcessStartInfo]::new((Get-Process -Id $PID).Path)
+$info.UseShellExecute = $false
+$info.CreateNoWindow = $true
+$info.RedirectStandardInput = $true
+foreach ($arg in @('-NoProfile', '-Command', '[void][Console]::ReadLine(); exit 7')) { $info.ArgumentList.Add($arg) }
+$child = [Diagnostics.Process]::Start($info)
+try {
+    $observed = Open-ObservedProcess $child.Id
+    $child.StandardInput.Close()
+    if (-not $observed.WaitForExit(10000) -or $observed.ExitCode -ne 7) { throw 'Observed process lost its exit code.' }
+} finally {
+    $child.StandardInput.Close()
+    $child.Dispose()
+    if ($null -ne $observed) { $observed.Dispose() }
+}
+'''
+        env = dict(os.environ, E2E_SOURCE=str(SCRIPT))
+        result = subprocess.run(['pwsh', '-NoProfile', '-Command', probe], env=env,
+                                capture_output=True, text=True, timeout=20)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        script = SCRIPT.read_text(encoding='utf-8')
+        self.assertIn('$new = Open-ObservedProcess $report.pid', script)
+        self.assertIn('$updateInstaller = Open-ObservedProcess $process.ProcessId', script)
+
     def test_runner_matrix_and_real_install_gates_are_not_skipped(self):
         source = SCRIPT.read_text(encoding='utf-8')
         self.assertIn("@('running', 'paused', 'tampered')", source)

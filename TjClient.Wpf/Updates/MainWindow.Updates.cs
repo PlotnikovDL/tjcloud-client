@@ -24,6 +24,11 @@ public partial class MainWindow : IUpdateLifetime
             "Разрешить автоматические обновления клиента?\n\nПодписанные пакеты загружаются из GitHub. Перед установкой клиент безопасно остановит передачу и перезапустится, сохранив профиль и очередь. Это отдельное согласие, оно не разрешает отправку журналов. Отключить можно в настройках.",
             "Обновления TJ Cloud Client", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No) == MessageBoxResult.Yes));
         AutoUpdateBox.IsEnabled = UpdateButton.IsEnabled = updates != null;
+        if (!smoke && updates == null)
+        {
+            AutoUpdateBox.Content = "Portable-версия обновляется вручную";
+            AutoUpdateBox.ToolTip = "Закройте клиент и распакуйте ZIP новой версии.";
+        }
         AutoUpdateBox.IsChecked = updates?.Consent == true;
         AutoUpdateBox.Click += (_, _) => updatePreferenceWork = ChangeUpdateConsentAsync();
         updateTimer.Tick += (_, _) => QueueUpdateCheck(false);

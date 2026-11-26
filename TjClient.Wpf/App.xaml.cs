@@ -17,7 +17,7 @@ public partial class App : Application
         try
         {
             profileLock = new ProfileLock(folder);
-            var window = CreateWindow(folder, smoke);
+            var window = CreateWindow(folder, smoke, UpdateProduction.IsInstalledCopy());
             if (smoke) window.ShowActivated = false;
             MainWindow = window;
             window.Show();
@@ -28,7 +28,7 @@ public partial class App : Application
             Shutdown(2);
         }
     }
-    internal static MainWindow CreateWindow(string folder, bool smoke) =>
-        new(folder, smoke, createUpdates: smoke ? null : UpdateProduction.Create);
+    internal static MainWindow CreateWindow(string folder, bool smoke, bool installed) =>
+        new(folder, smoke, createUpdates: installed && !smoke ? UpdateProduction.Create : null);
     protected override void OnExit(ExitEventArgs e) { profileLock?.Dispose(); base.OnExit(e); }
 }

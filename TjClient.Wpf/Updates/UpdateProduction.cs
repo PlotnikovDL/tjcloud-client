@@ -7,6 +7,25 @@ namespace TjClient.Wpf;
 
 internal static class UpdateProduction
 {
+    internal static bool IsInstalledCopy()
+    {
+        const string uninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\{12ca27e9-70d7-48f0-b0ac-350146b5578a}_is1";
+        try
+        {
+            using var registration = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(uninstallKey);
+            return IsInstalledDirectory(registration?.GetValue("InstallLocation") as string);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            return false;
+        }
+    }
+
+    internal static bool IsInstalledDirectory(string? location) =>
+        !string.IsNullOrWhiteSpace(location) && Path.IsPathFullyQualified(location)
+        && string.Equals(Path.TrimEndingDirectorySeparator(location), Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory),
+            StringComparison.OrdinalIgnoreCase);
+
     internal static UpdateCoordinator Create(string directory, IUpdateLifetime lifetime) =>
         new(directory, () => CreateBackend(directory, lifetime));
 

@@ -117,6 +117,12 @@ function Start-LiteralProcess([string]$FilePath, [string[]]$ArgumentList = @(), 
         if (-not $started) { foreach ($file in $files) { $file.Dispose() }; $p.Dispose() }
     }
 }
+function Open-ObservedProcess([int]$ProcessId) {
+    $observed = Get-Process -Id $ProcessId -ErrorAction Stop
+    # Retain the handle while the process is alive so ExitCode survives its exit.
+    [void]$observed.Handle
+    return $observed
+}
 function Complete-ProcessOutput([Diagnostics.Process]$Process) {
     if ($null -eq $Process.PSObject.Properties['OutputCopies']) { return }
     try {
@@ -171,8 +177,7 @@ foreach ($scenario in @('running', 'paused', 'tampered')) {
                 if ($process.ExecutablePath -and $process.ExecutablePath.StartsWith([IO.Path]::GetFullPath((Join-Path $case 'state/updates')) + '\', [StringComparison]::OrdinalIgnoreCase)) {
                     [void]$installerPids.Add([int]$process.ProcessId)
                     if ($null -eq $updateInstaller) {
-                        $updateInstaller = Get-Process -Id $process.ProcessId
-                        [void]$updateInstaller.Handle
+                        $updateInstaller = Open-ObservedProcess $process.ProcessId
                     }
                     $observation = Join-Path $case 'installer-observed.json'
                     if (-not (Test-Path -LiteralPath $observation)) {
@@ -227,7 +232,7 @@ foreach ($scenario in @('running', 'paused', 'tampered')) {
             if (-not $old.WaitForExit(20000) -or $old.ExitCode -ne 0) { throw 'Old process did not exit cleanly.' }
             if ($null -eq $updateInstaller -or -not $updateInstaller.WaitForExit(60000) -or $updateInstaller.ExitCode -ne 0) { throw 'Real update installer failed or timed out.' }
             if ($report.status -cne 'PASS' -or $report.pid -eq $old.Id -or $report.version -cne $newVersion -or $installerPids.Count -ne 1) { throw 'Expected a distinct new process and exactly one observed installer launch.' }
-            $new = Get-Process -Id $report.pid
+            $new = Open-ObservedProcess $report.pid
             if ($new.Path -cne (Join-Path $destination 'TjCloudClient.exe')) { throw 'Wrong restart path.' }
             if ((Get-ItemProperty $key).DisplayVersion -cne $newVersion) { throw 'Upgrade registration mismatch.' }
             $newAssemblyVersion = [Reflection.AssemblyName]::GetAssemblyName((Join-Path $destination 'TjClient.Tests.dll')).Version.ToString()
@@ -255,7 +260,9 @@ foreach ($scenario in @('running', 'paused', 'tampered')) {
             if ($null -ne $child) {
                 if (-not $child.WaitForExit(20000)) { throw 'Owned child did not stop. Refusing destructive cleanup.' }
                 Complete-ProcessOutput $child
-                if ($child.ExitCode -ne 0) { throw "Child exit was nonzero: $($child.ExitCode)." }
+                if ($null -eq $child.ExitCode) { throw "Missing exit code for child PID $($child.Id)." }
+                if ($child.ExitCode -ne 0) { throw "Child PID $($child.Id) exited with code $($child.ExitCode)." }
+                $child.Dispose()
             }
         }
         $uninstaller = Join-Path $destination 'unins000.exe'

@@ -6,6 +6,29 @@ namespace TjClient.Wpf;
 
 static class WindowTests
 {
+    public static void RestoredSendAndAcceptedRetry() => CompactWindowTests.InSta(async () =>
+    {
+        foreach (var running in new[] { true, false })
+        {
+            using var fixture = new Fixture();
+            var root = Path.Combine(fixture.Root, "exports");
+            Directory.CreateDirectory(root);
+            var saved = new ClientProfile { Folder = root, Endpoint = "https://localhost", Token = "synthetic",
+                SourceId = 1, Running = running, IntervalSeconds = 86400 }.Approve();
+            ProtectedStore.Save(Path.Combine(fixture.Root, "settings.dpapi"), saved);
+            using (var queue = new QueueStore(Path.Combine(fixture.Root, saved.QueueKey + ".db")))
+                queue.BeginObservation(root, [], saved.Mode, saved.Since);
+            var server = new MemoryCollector();
+            using var http = new HttpClient(new Handler(server.Handle));
+            var window = new MainWindow(fixture.Root, false, p => new CollectorClient(p.Endpoint, p.Token, http)) { ShowActivated = false };
+            try
+            {
+                window.Show();
+                await window.TestRestoredSendAndAcceptedRetry(fixture, server, running);
+            }
+            finally { window.DisposeTestWindow(); }
+        }
+    });
     public static void Cancellation() => Run().GetAwaiter().GetResult();
     private static async Task Run()
     {
@@ -36,6 +59,52 @@ static class WindowTests
 // Компилируется только тестами вместе с неизменёнными XAML и code-behind окна.
 public partial class MainWindow
 {
+    internal async Task TestRestoredSendAndAcceptedRetry(Fixture fixture, MemoryCollector server, bool wasRunning)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while ((running != wasRunning || busy) && DateTime.UtcNow < deadline) await Task.Delay(20);
+        Assert.True(!busy && running == wasRunning);
+        var path = fixture.File("exports/rphost_1/26112501.log", "synthetic");
+        SendButton.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.MenuItem.ClickEvent));
+        deadline = DateTime.UtcNow.AddSeconds(5);
+        while (busy && DateTime.UtcNow < deadline) await Task.Delay(20);
+        Assert.True(!busy && running == wasRunning);
+        Assert.Equal(1, server.Completions);
+        File.Delete(path);
+        server.Intercept = request => request.Method == HttpMethod.Get && request.RequestUri!.AbsolutePath.Contains("/uploads/")
+            ? new HttpResponseMessage(System.Net.HttpStatusCode.Gone) : null;
+        await Cycle();
+        using var queue = OpenQueue(profile);
+        var accepted = queue.All().Single();
+        Assert.Equal(QueueState.ImportStatusUnavailable, accepted.State);
+        Assert.Equal(server.Id, accepted.UploadId);
+        Assert.Equal(accepted.File.Size, accepted.Offset);
+        Assert.Equal(7L, accepted.JobId);
+        Assert.Equal(wasRunning, running);
+
+        Pause();
+        server.Intercept = null;
+        server.State = "imported";
+        ShowQueue(queue.All());
+        QueueGrid.SelectedIndex = 0;
+        await ClickRetryWithAnswer(true);
+        Assert.Equal(QueueState.Imported, queue.All().Single().State);
+        Assert.Equal(1, server.Registrations);
+        Assert.Equal(1, server.Completions);
+
+        queue.Save(accepted with { State = QueueState.Expired });
+        Assert.Equal(QueueState.ImportStatusUnavailable, queue.All().Single().State);
+        queue.Save(accepted with { State = QueueState.Delivered, Offset = 0, UploadId = null });
+        var legacy = queue.All().Single();
+        Assert.Equal(QueueState.ImportStatusUnavailable, legacy.State);
+        Assert.Equal(accepted.Offset, legacy.Offset);
+        ShowQueue([legacy]);
+        QueueGrid.SelectedIndex = 0;
+        RetryButton.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.MenuItem.ClickEvent));
+        Assert.True(StatusText.Text.Contains("задание 7"));
+        await Cycle();
+        Assert.Equal(1, server.Registrations);
+    }
     internal async Task CheckCancellationRegression(BodyServer server, TaskCompletionSource completed)
     {
         FolderBox.Text = stateDirectory;

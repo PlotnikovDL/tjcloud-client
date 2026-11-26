@@ -77,7 +77,7 @@ jobs:
           $zip = Get-ChildItem "$env:RUNNER_TEMP/packages/*.zip"
           if (@($zip).Count -ne 1) { throw 'Expected exactly one ZIP.' }
           Expand-Archive -LiteralPath $zip.FullName -DestinationPath "$env:RUNNER_TEMP/zip-probe/app"
-          ./scripts/Test-Smoke.ps1 -ExePath "$env:RUNNER_TEMP/zip-probe/app/TjCloudClient.exe"
+          ./scripts/Test-Smoke.ps1 -ExePath "$env:RUNNER_TEMP/zip-probe/app/TjCloudClient.exe" -ExpectedMode portable
       - name: Test synthetic signing and compile restart probes
         run: |
           ./scripts/Build-ReleaseTools.ps1 -ArtifactsRoot "$env:RUNNER_TEMP/release-tools"

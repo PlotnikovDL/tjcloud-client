@@ -40,7 +40,7 @@ foreach ($source in Get-ChildItem -LiteralPath $PublishDirectory -File -Recurse)
     if (-not (Test-Path -LiteralPath $installed)) { throw "Installed payload is missing: $relative" }
     if ((Get-FileHash -LiteralPath $source.FullName).Hash -ne (Get-FileHash -LiteralPath $installed).Hash) { throw "Installed payload differs: $relative" }
 }
-& (Join-Path $PSScriptRoot 'Test-Smoke.ps1') -ExePath (Join-Path $destination 'TjCloudClient.exe')
+& (Join-Path $PSScriptRoot 'Test-Smoke.ps1') -ExePath (Join-Path $destination 'TjCloudClient.exe') -ExpectedMode installed
 $uninstall = Start-Process -FilePath (Join-Path $destination 'unins000.exe') -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -PassThru
 try {
     if (-not $uninstall.WaitForExit(120000)) { throw 'Uninstaller timed out on the runner.' }

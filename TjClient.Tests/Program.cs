@@ -40,6 +40,8 @@ tests.Add(("delivered_file_changes_and_conflicts_stop_following_files", EngineTe
 tests.Add(("queue_binds_root_origin_source_and_caps_scan", QueueTests.Scope));
 tests.Add(("lost_complete_ack_does_not_repeat_import", EngineTests.LostComplete));
 tests.Add(("permanent_upload_errors_stop_and_do_not_backoff", EngineTests.PermanentErrors));
+tests.Add(("server_413_preserves_file_error_and_continues_queue", EngineTests.ServerSizeLimit));
+tests.Add(("wpf_restored_send_and_status_retry_for_accepted_file", TjClient.Wpf.WindowTests.RestoredSendAndAcceptedRetry));
 tests.Add(("pause_cancels_without_unconfirmed_offset", EngineTests.Cancellation));
 tests.Add(("new_files_baseline_is_taken_at_start_not_earlier_preview", QueueTests.ObservationBoundary));
 tests.Add(("accepted_upload_never_regresses_to_resend", EngineTests.StateRegression));

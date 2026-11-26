@@ -287,7 +287,11 @@ public partial class MainWindow : Window
         finally { cancellation.Dispose(); cancellation = null; SetBusy(false); }
     }
     private async void StartClick(object sender, RoutedEventArgs e) => await Start(true);
-    private async void SendClick(object sender, RoutedEventArgs e) => await Start(running);
+    private async void SendClick(object sender, RoutedEventArgs e)
+    {
+        if (existingQueue && profile.ConsentBinding.Length != 0) await Cycle();
+        else await Start(running);
+    }
     private async Task Start(bool schedule)
     {
         if (busy) return;
@@ -407,10 +411,16 @@ public partial class MainWindow : Window
             using (var queue = OpenQueue(profile))
             {
                 var item = queue.All().Single(x => x.File.RelativePath == row.Path);
-                if (item.State is not (QueueState.Expired or QueueState.Error)) throw new InvalidOperationException("Повтор разрешён только для истёкшей передачи или исправленной ошибки. Конфликт нельзя перезаписать.");
-                if (MessageBox.Show(this, "Повторить выбранную передачу с прежней идентичностью файла? Истёкшая передача будет зарегистрирована заново.", "Явный повтор", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
+                if (item.State is not (QueueState.Expired or QueueState.Error or QueueState.ImportStatusUnavailable)) throw new InvalidOperationException("Выберите истёкшую передачу, ошибку или файл с недоступным статусом импорта.");
+                var accepted = item.JobId != null;
+                if (accepted && item.UploadId == null)
+                    throw new InvalidOperationException($"Файл принят. Проверьте задание {item.JobId} на сайте.");
+                var question = accepted ? "Проверить статус импорта принятого файла?"
+                    : "Повторить выбранную передачу с прежней идентичностью файла? Истёкшая передача будет зарегистрирована заново.";
+                if (MessageBox.Show(this, question, "Явный повтор", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
                 if (updateQuiescing || exiting) return;
-                if (item.UploadId == null || item.State == QueueState.Expired)
+                var registerAgain = !accepted && item.State == QueueState.Expired;
+                if (!accepted && (item.UploadId == null || registerAgain))
                 {
                     SetBusy(true);
                     cancellation = new CancellationTokenSource();
@@ -428,8 +438,8 @@ public partial class MainWindow : Window
                     }
                     finally { cancellation.Dispose(); cancellation = null; SetBusy(false); }
                 }
-                queue.Save(item with { State = item.JobId != null ? QueueState.Delivered : QueueState.Pending, UploadId = item.State == QueueState.Expired ? null : item.UploadId,
-                    Offset = item.State == QueueState.Expired ? 0 : item.Offset, Attempts = 0, NextAttemptTicks = 0, Error = "" });
+                queue.Save(item with { State = accepted ? QueueState.Delivered : QueueState.Pending, UploadId = registerAgain ? null : item.UploadId,
+                    Offset = registerAgain ? 0 : item.Offset, Attempts = 0, NextAttemptTicks = 0, Error = "" });
             }
             await Cycle();
         }
@@ -467,7 +477,8 @@ public partial class MainWindow : Window
     {
         QueueState.Baseline => "Существовал до наблюдения", QueueState.Pending => "Ожидает отправки", QueueState.Uploading => "Передаётся", QueueState.Retry => "Ожидает повтора",
         QueueState.Delivered => "Получено сервером", QueueState.Importing => "Импортируется", QueueState.Imported => "Импортировано", QueueState.ImportFailed => "Ошибка импорта",
-        QueueState.Expired => "Истекла - нужен повтор", QueueState.Conflict => "Конфликт - остановлено", _ => "Ошибка - остановлено"
+        QueueState.ImportStatusUnavailable => "Принято - статус импорта недоступен",
+        QueueState.Expired => "Истекла - нужен повтор", QueueState.Conflict => "Конфликт - остановлено", _ => "Ошибка файла"
     };
     private static string Friendly(Exception error) => error switch
     {
@@ -519,7 +530,8 @@ public partial class MainWindow : Window
         FinishedCheck.IsChecked = true;
         FolderBox.Text = @"C:\synthetic";
         ok &= FinishedCheck.IsChecked == false;
-        File.WriteAllText(Path.Combine(stateDirectory, "window-smoke.txt"), ok ? "PASS masked-token default-new startup-off origin-clears-token folder-clears-consent consent-revoked" : "FAIL");
+        var mode = UpdateProduction.IsInstalledCopy() ? "installed" : "portable";
+        File.WriteAllText(Path.Combine(stateDirectory, "window-smoke.txt"), ok ? $"PASS masked-token default-new startup-off origin-clears-token folder-clears-consent consent-revoked mode={mode}" : "FAIL");
         var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap((int)ActualWidth, (int)ActualHeight, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
         bitmap.Render(this);
         var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();

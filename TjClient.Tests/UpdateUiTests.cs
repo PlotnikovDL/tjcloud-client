@@ -10,12 +10,14 @@ static class UpdateUiTests
     public static void ProductionWiring() => CompactWindowTests.InSta(() =>
     {
         using var fixture = new Fixture();
-        var create = typeof(App).GetMethod("CreateWindow", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
-        Assert.True(create != null, "App должен использовать одну проверяемую production factory");
-        var real = (MainWindow)create!.Invoke(null, [fixture.Root, false])!;
-        var smoke = (MainWindow)create.Invoke(null, [fixture.Root, true])!;
-        try { real.AssertProductionUpdates(true); smoke.AssertProductionUpdates(false); }
-        finally { real.DisposeTestWindow(); smoke.DisposeTestWindow(); }
+        Assert.True(UpdateProduction.IsInstalledDirectory(AppContext.BaseDirectory));
+        Assert.True(UpdateProduction.IsInstalledDirectory(Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory)));
+        Assert.True(!UpdateProduction.IsInstalledDirectory(null) && !UpdateProduction.IsInstalledDirectory(fixture.Root));
+        var real = App.CreateWindow(fixture.Root, false, true);
+        var smoke = App.CreateWindow(fixture.Root, true, true);
+        var portable = App.CreateWindow(fixture.Root, false, false);
+        try { real.AssertProductionUpdates(true); smoke.AssertProductionUpdates(false); portable.AssertProductionUpdates(false); }
+        finally { real.DisposeTestWindow(); smoke.DisposeTestWindow(); portable.DisposeTestWindow(); }
         using var backend = UpdateProduction.CreateBackend(fixture.Root, new SignedUpdateTests.Lifetime());
         Assert.True(backend is SignedUpdateBackend);
         using var stream = typeof(MainWindow).Assembly.GetManifestResourceStream("TjCloudClient.Updates.PublicKey");
