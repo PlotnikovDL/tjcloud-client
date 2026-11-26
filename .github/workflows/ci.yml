@@ -1,0 +1,85 @@
+name: Windows build
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_call:
+    outputs:
+      version:
+        description: Version read from Directory.Build.props
+        value: ${{ jobs.build.outputs.version }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Read metadata and verify release tag
+        id: metadata
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          . ./scripts/Common.ps1
+          $metadata = Get-PackageMetadata
+          if ($env:REF_TYPE -eq 'tag' -and $env:REF_NAME -cne "v$($metadata.Version)") {
+            throw 'Release tag does not match Directory.Build.props.'
+          }
+          "version=$($metadata.Version)" >> $env:GITHUB_OUTPUT
+      - name: Locked build, packaging tests, native tests and publish smoke
+        run: ./scripts/Build.ps1 -ArtifactsRoot "$env:RUNNER_TEMP/build-output"
+      - name: Extract verified portable Inno Setup compiler
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/Get-InnoCompiler.ps1 -ToolRoot "$env:RUNNER_TEMP/inno-6.7.4"
+      - name: Compile per-user installer and create ZIP with checksums
+        run: |
+          ./scripts/Package.ps1 -PublishDirectory "$env:RUNNER_TEMP/build-output/publish" -OutputDirectory "$env:RUNNER_TEMP/packages" -IsccPath "$env:RUNNER_TEMP/inno-6.7.4/compiler/ISCC.exe"
+      - name: Smoke test the extracted ZIP
+        run: |
+          $zip = Get-ChildItem "$env:RUNNER_TEMP/packages/*.zip"
+          if (@($zip).Count -ne 1) { throw 'Expected exactly one ZIP.' }
+          Expand-Archive -LiteralPath $zip.FullName -DestinationPath "$env:RUNNER_TEMP/zip-probe/app"
+          ./scripts/Test-Smoke.ps1 -ExePath "$env:RUNNER_TEMP/zip-probe/app/TjCloudClient.exe"
+      - name: Ephemeral runner install and uninstall acceptance
+        run: |
+          $setup = Get-ChildItem "$env:RUNNER_TEMP/packages/*-setup.exe"
+          if (@($setup).Count -ne 1) { throw 'Expected exactly one installer.' }
+          ./scripts/Test-Installer.ps1 -SetupPath $setup.FullName -PublishDirectory "$env:RUNNER_TEMP/build-output/publish"
+      - name: Upload verified distribution
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-packages
+          path: ${{ runner.temp }}/packages/*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload native test and smoke evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-evidence
+          path: |
+            ${{ runner.temp }}/build-output/native-tests.log
+            ${{ runner.temp }}/build-output/gui-smoke/*
+            ${{ runner.temp }}/zip-probe/gui-smoke/*
+            ${{ runner.temp }}/gui-smoke/*
+          if-no-files-found: warn
+          retention-days: 14

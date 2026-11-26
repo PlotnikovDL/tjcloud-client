@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="TjClient.Core/TjClient.Core.csproj" />
+  <Project Path="TjClient.Tests/TjClient.Tests.csproj" />
+  <Project Path="TjClient.Wpf/TjClient.Wpf.csproj" />
+</Solution>

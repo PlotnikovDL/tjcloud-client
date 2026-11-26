@@ -1,0 +1,13 @@
+bin/
+obj/
+artifacts/
+*.user
+*.db*
+*.protected.json
+__pycache__/
+*.pyc
+.vs/
+.packaging-*/
+packaging-artifacts/
+packaging-evidence/
+
