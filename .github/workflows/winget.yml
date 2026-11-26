@@ -41,6 +41,7 @@ jobs:
           winget settings --enable LocalManifestFiles
           if ($LASTEXITCODE) { throw 'Local manifest installation is unavailable.' }
       - name: Validate and install the published package
+        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -60,8 +61,34 @@ jobs:
           if ($LASTEXITCODE) { throw 'Manifest validation failed.' }
           $key = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$($metadata.ProductCode)"
           if (Test-Path -LiteralPath $key) { throw 'The test requires a clean runner.' }
-          winget install --manifest $manifest --silent --accept-source-agreements --disable-interactivity
-          if ($LASTEXITCODE) { throw 'Manifest installation failed.' }
+          $start = [Diagnostics.ProcessStartInfo]::new((Get-Command winget).Source)
+          $start.UseShellExecute = $false
+          foreach ($argument in @('install','--manifest',$manifest,'--silent','--accept-source-agreements','--disable-interactivity','--verbose-logs','--log',"$env:RUNNER_TEMP/winget-setup.log")) {
+            $start.ArgumentList.Add($argument)
+          }
+          $install = [Diagnostics.Process]::Start($start)
+          try {
+            if (!$install.WaitForExit(150000)) {
+              $output = New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/winget-diagnostics" -Force
+              Add-Type -AssemblyName UIAutomationClient
+              $desktop = [System.Windows.Automation.AutomationElement]::RootElement
+              $condition = [System.Windows.Automation.Condition]::TrueCondition
+              $windows = $desktop.FindAll([System.Windows.Automation.TreeScope]::Children, $condition)
+              foreach ($window in $windows) {
+                $owner = Get-Process -Id $window.Current.ProcessId -ErrorAction SilentlyContinue
+                if ($owner -and $owner.Name -match 'smart|consent|winget|TJCloud|ApplicationFrameHost|explorer') {
+                  $window.Current.Name | Out-File "$output/desktop.txt" -Append
+                  $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition) |
+                    ForEach-Object { $_.Current.Name } | Where-Object { $_ } | Out-File "$output/desktop.txt" -Append
+                }
+              }
+              Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'winget|TJCloudClient|\.tmp$|consent|smartscreen' } |
+                Select-Object ProcessId,ParentProcessId,SessionId,Name,ExecutablePath,CommandLine |
+                ConvertTo-Json | Set-Content "$output/before-timeout.json"
+              throw 'WinGet installation timed out. See installer diagnostics.'
+            }
+            if ($install.ExitCode -ne 0) { throw "Manifest installation failed with exit code $($install.ExitCode)." }
+          } finally { $install.Dispose() }
           $entry = Get-ItemProperty -LiteralPath $key
           if ($entry.InstallLocation.TrimEnd('\') -ine (Join-Path $env:ProgramFiles 'TJCloudClient')) { throw 'Unexpected installation path.' }
           if ($entry.DisplayName -cne $metadata.Product -or $entry.DisplayVersion -cne $metadata.Version -or $entry.Publisher -cne $metadata.Publisher) {
@@ -71,6 +98,22 @@ jobs:
           ./scripts/Test-Smoke.ps1 -ExePath $exe -ExpectedMode installed -ReportDirectory "$env:RUNNER_TEMP/gui-smoke"
           winget uninstall --manifest $manifest --silent --accept-source-agreements --disable-interactivity
           if ($LASTEXITCODE -or (Test-Path -LiteralPath $key) -or (Test-Path -LiteralPath $exe)) { throw 'Manifest uninstall failed.' }
+      - name: Collect installer diagnostics
+        if: failure() || cancelled()
+        run: |
+          $output = New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/winget-diagnostics" -Force
+          $logs = Join-Path $env:LOCALAPPDATA 'Packages/Microsoft.DesktopAppInstaller_8wekyb3d8bbwe/LocalState/DiagOutputDir'
+          if (Test-Path $logs) { Get-ChildItem $logs -File | Copy-Item -Destination $output.FullName }
+          if (Test-Path "$env:RUNNER_TEMP/winget-setup.log") { Copy-Item "$env:RUNNER_TEMP/winget-setup.log" $output.FullName }
+          Get-Process | Where-Object { $_.MainWindowTitle -or $_.Name -match 'winget|TJCloudClient|consent|smartscreen' } |
+            Select-Object Id,Name,MainWindowTitle | ConvertTo-Json | Set-Content "$output/windows.json"
+          Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'winget|TJCloudClient|\.tmp$|consent|smartscreen' } |
+            Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine | ConvertTo-Json | Set-Content "$output/processes.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: failure() || cancelled()
+        with:
+          name: winget-diagnostics
+          path: ${{ runner.temp }}/winget-diagnostics
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: winget-manifests
