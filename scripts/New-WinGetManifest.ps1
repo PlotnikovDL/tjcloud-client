@@ -35,30 +35,32 @@ if (-not $SchemaOnly) {
 $destination = Join-Path $OutputDirectory "manifests/t/TJCloud/Client/$Version"
 $common = "PackageIdentifier: $($metadata.Identifier)`nPackageVersion: '$Version'"
 if ($SchemaOnly) { $common = "# SCHEMA ONLY - URL not verified, do not submit or publish this fixture.`n$common" }
+$schemaVersion = '1.28.0'
 $versionYaml = @"
-# yaml-language-server: `$schema=https://aka.ms/winget-manifest.version.1.12.0.schema.json
+# yaml-language-server: `$schema=https://aka.ms/winget-manifest.version.$schemaVersion.schema.json
 $common
 DefaultLocale: en-US
 ManifestType: version
-ManifestVersion: 1.12.0
+ManifestVersion: $schemaVersion
 "@
 $localeYaml = @"
-# yaml-language-server: `$schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
+# yaml-language-server: `$schema=https://aka.ms/winget-manifest.defaultLocale.$schemaVersion.schema.json
 $common
 PackageLocale: en-US
 Publisher: '$($metadata.Publisher)'
 PublisherUrl: '$($metadata.RepositoryUrl)'
 PublisherSupportUrl: '$($metadata.RepositoryUrl)/issues'
+PrivacyUrl: '$($metadata.RepositoryUrl)/blob/v$Version/PRIVACY.md'
 PackageName: '$($metadata.Product)'
 PackageUrl: '$($metadata.RepositoryUrl)'
 License: '$($metadata.License)'
 LicenseUrl: '$($metadata.RepositoryUrl)/blob/v$Version/LICENSE'
 ShortDescription: Windows client for explicitly approved TJ Cloud log uploads.
 ManifestType: defaultLocale
-ManifestVersion: 1.12.0
+ManifestVersion: $schemaVersion
 "@
 $installerYaml = @"
-# yaml-language-server: `$schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
+# yaml-language-server: `$schema=https://aka.ms/winget-manifest.installer.$schemaVersion.schema.json
 $common
 InstallerType: inno
 Scope: user
@@ -81,7 +83,7 @@ Installers:
   InstallerSha256: $hash
   ProductCode: '$($metadata.ProductCode)'
 ManifestType: installer
-ManifestVersion: 1.12.0
+ManifestVersion: $schemaVersion
 "@
 New-Item -ItemType Directory -Force $destination | Out-Null
 $documents = @{
