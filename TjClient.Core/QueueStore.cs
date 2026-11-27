@@ -78,17 +78,54 @@ public sealed class QueueStore : IDisposable
         foreach (var file in fresh) Save(new(file, State: file.ModifiedTicks < sinceTicks ? QueueState.Baseline : QueueState.Pending));
         transaction.Commit();
     }
-    public IReadOnlyList<LocalFile> SelectForDiscovery(IReadOnlyList<LocalFile> files)
+    public IReadOnlyList<QueueItem> PreviewPeriod(IReadOnlyList<LocalFile> files, InitialMode mode, DateTimeOffset? since)
     {
-        var sinceTicks = DiscoverySinceTicks;
-        return files.Where(x => x.ModifiedTicks >= sinceTicks).ToList();
+        var known = All().ToDictionary(x => x.File.RelativePath, StringComparer.OrdinalIgnoreCase);
+        foreach (var item in PeriodChanges(files, known, mode, since))
+            known[item.File.RelativePath] = item;
+        return known.Values.OrderBy(x => x.File.RelativePath, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+    public void ConfirmObservation(string root, InitialMode mode, DateTimeOffset? since)
+    {
+        var files = LogScanner.Scan(root);
+        if (!Initialized)
+        {
+            Initialize(files, mode, since);
+            return;
+        }
+        using var transaction = db.BeginTransaction();
+        var known = All().ToDictionary(x => x.File.RelativePath, StringComparer.OrdinalIgnoreCase);
+        foreach (var item in PeriodChanges(files, known, mode, since)) Save(item);
+        SaveDiscoveryPeriod(mode, since, replace: true);
+        transaction.Commit();
+    }
+    private IReadOnlyList<QueueItem> PeriodChanges(IReadOnlyList<LocalFile> files, IReadOnlyDictionary<string, QueueItem> known,
+        InitialMode mode, DateTimeOffset? since)
+    {
+        if (mode == InitialMode.ModifiedSince && since == null) throw new ArgumentException("Выберите дату начала.");
+        var continueNewFiles = mode == InitialMode.NewFiles && DiscoverySinceTicks == 0;
+        var changes = new List<QueueItem>();
+        var count = known.Count;
+        foreach (var file in files)
+        {
+            var inPeriod = mode == InitialMode.ModifiedSince && file.ModifiedTicks >= since!.Value.UtcTicks;
+            if (known.TryGetValue(file.RelativePath, out var item))
+            {
+                if (item.State == QueueState.Baseline && inPeriod) changes.Add(new(file));
+                continue;
+            }
+            if (++count > quota) throw new QueueFullException();
+            changes.Add(new(file, State: inPeriod || continueNewFiles ? QueueState.Pending : QueueState.Baseline));
+        }
+        return changes;
     }
     private long DiscoverySinceTicks => Scalar("SELECT COALESCE((SELECT value FROM settings WHERE key='discovery_since_ticks'),0)");
-    private void SaveDiscoveryPeriod(InitialMode mode, DateTimeOffset? since)
+    private void SaveDiscoveryPeriod(InitialMode mode, DateTimeOffset? since, bool replace = false)
     {
         if (mode == InitialMode.ModifiedSince && since == null) throw new ArgumentException("Выберите дату начала.");
         using var cmd = db.CreateCommand();
-        cmd.CommandText = "INSERT OR IGNORE INTO settings(key,value) VALUES ('discovery_since_ticks',$since)";
+        cmd.CommandText = "INSERT INTO settings(key,value) VALUES ('discovery_since_ticks',$since) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE $replace";
+        cmd.Parameters.AddWithValue("$replace", replace);
         cmd.Parameters.AddWithValue("$since", mode == InitialMode.ModifiedSince ? since!.Value.UtcTicks : 0);
         cmd.ExecuteNonQuery();
     }

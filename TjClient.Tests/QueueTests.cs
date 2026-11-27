@@ -2,6 +2,48 @@ using TjClient.Core;
 
 static class QueueTests
 {
+    public static void ConfirmedPeriod()
+    {
+        using var fixture = new Fixture();
+        const string baseline = "rphost_1/26030101.log", ongoing = "rphost_1/26030102.log", late = "rphost_1/26030103.log";
+        var since = new DateTimeOffset(2026, 3, 1, 0, 0, 0, TimeSpan.Zero);
+        File.SetLastWriteTimeUtc(fixture.File(baseline, "existing"), since.UtcDateTime);
+        fixture.File(ongoing, "in progress");
+        var path = Path.Combine(fixture.Root, "queue.db");
+        QueueItem retry;
+        using (var queue = new QueueStore(path))
+        {
+            queue.ConfirmObservation(fixture.Root, InitialMode.NewFiles, null);
+            retry = queue.All().Single(x => x.File.RelativePath == ongoing) with
+            {
+                State = QueueState.Retry, UploadId = Guid.NewGuid().ToString(), Offset = 3, Attempts = 2, NextAttemptTicks = 123
+            };
+            queue.Save(retry);
+            File.SetLastWriteTimeUtc(fixture.File(late, "appeared during pause"), since.UtcDateTime.AddSeconds(-1));
+            var preview = queue.PreviewPeriod(LogScanner.Scan(fixture.Root), InitialMode.ModifiedSince, since);
+            Assert.Equal(QueueState.Pending, preview.Single(x => x.File.RelativePath == baseline).State);
+            Assert.Equal(QueueState.Baseline, preview.Single(x => x.File.RelativePath == late).State);
+            Assert.Equal(retry, preview.Single(x => x.File.RelativePath == ongoing));
+            Assert.Equal(2, queue.All().Count);
+            Assert.Equal(QueueState.Baseline, queue.All().Single(x => x.File.RelativePath == baseline).State);
+        }
+        using (var full = new QueueStore(path, 2))
+            Assert.Throws<QueueFullException>(() => full.ConfirmObservation(fixture.Root, InitialMode.ModifiedSince, since));
+        using (var queue = new QueueStore(path))
+        {
+            Assert.Equal(QueueState.Baseline, queue.All().Single(x => x.File.RelativePath == baseline).State);
+            queue.ConfirmObservation(fixture.Root, InitialMode.ModifiedSince, since);
+            Assert.Equal(retry, queue.All().Single(x => x.File.RelativePath == ongoing));
+        }
+        using var reopened = new QueueStore(path);
+        Assert.Equal(QueueState.Pending, reopened.All().Single(x => x.File.RelativePath == baseline).State);
+        File.SetLastWriteTimeUtc(fixture.File("rphost_1/26030104.log", "late, before period"), since.UtcDateTime.AddHours(-1));
+        reopened.Discover(LogScanner.Scan(fixture.Root));
+        Assert.Equal(2, reopened.All().Count(x => x.State == QueueState.Baseline));
+        reopened.ConfirmObservation(fixture.Root, InitialMode.ModifiedSince, since.AddDays(-1));
+        Assert.Equal(3, reopened.All().Count(x => x.State == QueueState.Pending));
+        Assert.Equal(retry, reopened.All().Single(x => x.File.RelativePath == ongoing));
+    }
     public static void ModifiedSinceBoundary()
     {
         using var fixture = new Fixture();

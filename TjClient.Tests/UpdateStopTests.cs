@@ -109,7 +109,6 @@ public partial class MainWindow
     internal async Task AssertStartDuringDrain(ClientProfile saved, string mode)
     {
         checkedProfile = saved;
-        previewSnapshot = new List<LocalFile>();
         if (mode == "initialization") Directory.CreateDirectory(Path.Combine(stateDirectory, saved.QueueKey + ".db"));
         using var locked = mode == "save" ? new FileStream(settingsPath, FileMode.Open, FileAccess.Read, FileShare.Read) : null;
         ThreadPool.GetMinThreads(out var minWorker, out var minIo);

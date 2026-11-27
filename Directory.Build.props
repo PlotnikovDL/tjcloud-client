@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
-    <Version>1.0.2</Version>
+    <Version>1.0.3</Version>
     <Company>TJCloud</Company>
     <Product>TJ Cloud Client</Product>
     <RepositoryUrl>https://github.com/PlotnikovDL/tjcloud-client</RepositoryUrl>
