@@ -59,6 +59,8 @@ tests.Add(("wpf_compact_exclusive_modes_centered_date_paused_period", TjClient.W
 tests.Add(("wpf_migrates_saved_poll_interval_before_first_cycle_and_checks_bounds", TjClient.Wpf.WindowTests.PollIntervals));
 tests.Add(("upgrade_resumes_legacy_partial_upload_and_tails_new_bytes", QueueTests.UpgradeInFlight));
 tests.Add(("baseline_utf8_marker_preserves_first_new_event", QueueTests.BaselineBom));
+tests.Add(("marker_only_logs_are_skipped_until_the_first_event", QueueTests.SkipMarkerFiles));
+tests.Add(("legacy_unsent_marker_is_skipped_and_append_survives_restart", QueueTests.SkipUnsentLegacyMarker));
 tests.Add(("wpf_paused_period_backfills_only_confirmed_history", TjClient.Wpf.WindowTests.PausedHistory));
 tests.Add(("wpf_compact_disclosure_receiver_actions_lifecycle", TjClient.Wpf.CompactWindowTests.CompactSurface));
 tests.Add(("wpf_queue_readable_units_exact_bytes_tooltip_fits_column", TjClient.Wpf.QueuePresentationTests.ReadableProgress));

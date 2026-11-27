@@ -71,6 +71,17 @@ public sealed class ClientEngine(string root, long sourceId, QueueStore queue, C
     }
     private async Task Transfer(QueueItem item, CollectorStatus status, CancellationToken ct)
     {
+        if (item is { RangeStart: null, UploadId: null, JobId: null, Offset: 0 } && item.File.Size is 0 or 3)
+        {
+            // Старая очередь хранит файл целиком. Позиция чтения уже сохранена при её обновлении.
+            using var small = item.File.Size == 3 ? new LockedLog(root, item.File) : null;
+            if (small == null || small.StartsWithUtf8Marker())
+            {
+                if (small != null && item.Hash.Length != 0 && item.Hash != small.Hash()) throw new FileChangedException();
+                queue.Discard(item);
+                return;
+            }
+        }
         if (item.File.Size > status.MaxFileBytes || item.File.Size > 2147483648L)
         {
             Save(item with { State = QueueState.Error, NextAttemptTicks = 0,

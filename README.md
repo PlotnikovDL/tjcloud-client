@@ -16,7 +16,7 @@
 
 ## Как скачать
 
-Для Windows x64 скачайте [установщик 1.0.4](https://github.com/PlotnikovDL/tjcloud-client/releases/download/v1.0.4/TJCloudClient-1.0.4-win-x64-setup.exe) или [portable ZIP](https://github.com/PlotnikovDL/tjcloud-client/releases/download/v1.0.4/TJCloudClient-1.0.4-win-x64.zip). Русский мастер устанавливает клиент для всех пользователей в `C:\Program Files\TJCloudClient` на системном диске C. Windows запросит права администратора. Для запуска без установки распакуйте ZIP целиком и откройте `TjCloudClient.exe`. Проверьте скачанный файл по [контрольным суммам выпуска](https://github.com/PlotnikovDL/tjcloud-client/releases/download/v1.0.4/SHA256SUMS.txt).
+Для Windows x64 скачайте [установщик 1.0.5](https://github.com/PlotnikovDL/tjcloud-client/releases/download/v1.0.5/TJCloudClient-1.0.5-win-x64-setup.exe) или [portable ZIP](https://github.com/PlotnikovDL/tjcloud-client/releases/download/v1.0.5/TJCloudClient-1.0.5-win-x64.zip). Русский мастер устанавливает клиент для всех пользователей в `C:\Program Files\TJCloudClient` на системном диске C. Windows запросит права администратора. Для запуска без установки распакуйте ZIP целиком и откройте `TjCloudClient.exe`. Проверьте скачанный файл по [контрольным суммам выпуска](https://github.com/PlotnikovDL/tjcloud-client/releases/download/v1.0.5/SHA256SUMS.txt).
 
 При переходе с установки 1.0.1 для текущего пользователя отключите автозапуск, если он включён, завершите клиент через трей и удалите старую программу в параметрах Windows. Затем установите новую версию и при необходимости включите автозапуск. Ключ, согласия и история очереди сохраняются в профиле Windows. Остальные пользователи компьютера настраивают собственное подключение.
 

@@ -96,14 +96,15 @@ public sealed class QueueStore : IDisposable
     public void ConfirmObservation(string root, InitialMode mode, DateTimeOffset? since)
     {
         long threshold = Threshold(mode, since);
-        var files = LogScanner.Scan(root);
+        // Для уже открытых файлов сохраняем границу наблюдения, даже если в файле пока только метка.
+        var files = LogScanner.Enumerate(root).ToList();
         using var transaction = db.BeginTransaction();
         bool continueNew = Initialized && mode == InitialMode.NewFiles && DiscoverySince == 0;
         foreach (var file in files)
         {
             var cursor = GetCursor(file.RelativePath);
             bool selected = mode == InitialMode.ModifiedSince && file.ModifiedTicks >= threshold;
-            if (cursor == null) PutCursor(file.RelativePath, InitialCursor(file, selected || continueNew));
+            if (cursor == null) PutCursor(file.RelativePath, InitialCursor(root, file, selected || continueNew));
             else if (selected && cursor.History < cursor.Cut)
                 PutCursor(file.RelativePath, cursor with { Backfill = true });
         }
@@ -131,8 +132,11 @@ public sealed class QueueStore : IDisposable
         since?.UtcTicks ?? throw new ArgumentException("Выберите дату начала.");
     private long DiscoverySince => Convert.ToInt64(Setting("discovery_since_ticks"));
 
-    private static Cursor InitialCursor(LocalFile file, bool selected) =>
-        new(file.CreatedTicks, selected ? 0 : file.Size, selected ? 0 : file.Size, 0, false, selected || file.Size == 0);
+    private static Cursor InitialCursor(string root, LocalFile file, bool selected)
+    {
+        if (LogScanner.IsMarkerOnly(root, file)) return new(file.CreatedTicks, 3, 0, 0, false, true);
+        return new(file.CreatedTicks, selected ? 0 : file.Size, selected ? 0 : file.Size, 0, false, selected || file.Size == 0);
+    }
 
     internal long BatchLimit => long.TryParse(Setting("batch_limit"), out long bytes) ? bytes : 1;
     internal void RememberBatchLimit(long bytes)
@@ -152,7 +156,7 @@ public sealed class QueueStore : IDisposable
             var cursor = GetCursor(file.RelativePath);
             if (cursor == null)
             {
-                cursor = InitialCursor(file, file.ModifiedTicks >= threshold);
+                cursor = InitialCursor(root, file, file.ModifiedTicks >= threshold);
                 PutCursor(file.RelativePath, cursor);
             }
             if (cursor.Created != file.CreatedTicks || cursor.Position > file.Size) throw new FileChangedException();
@@ -160,16 +164,12 @@ public sealed class QueueStore : IDisposable
             if (!history && cursor.Position == file.Size) continue;
             if (available <= 0) return false;
             using var log = new LockedLog(root, file, growing: true);
-            if (cursor.Cut is > 0 and <= 3 && cursor.History < cursor.Cut && file.Size >= 3)
+            bool markerAtBoundary = cursor.Cut is > 0 and <= 3 && cursor.History < cursor.Cut && file.Size >= 3;
+            if ((markerAtBoundary || (cursor.Position == 0 && file.Size == 3)) && log.StartsWithUtf8Marker())
             {
-                var bom = new byte[3];
-                log.Stream.ReadExactly(bom);
-                if (bom.AsSpan().SequenceEqual(new byte[] { 0xef, 0xbb, 0xbf }))
-                {
-                    cursor = cursor with { History = cursor.Cut, Backfill = false, Aligned = true, Position = Math.Max(3, cursor.Position) };
-                    PutCursor(file.RelativePath, cursor);
-                    history = false;
-                }
+                cursor = cursor with { History = cursor.Cut, Backfill = false, Aligned = true, Position = Math.Max(3, cursor.Position) };
+                PutCursor(file.RelativePath, cursor);
+                history = false;
             }
             if (history)
             {
@@ -284,12 +284,16 @@ public sealed class QueueStore : IDisposable
     {
         if (item.State == QueueState.Imported)
         {
-            using var tx = db.BeginTransaction();
-            Remove(item);
-            tx.Commit();
+            Discard(item);
             return;
         }
         Upsert("INSERT INTO files(path,metadata) VALUES($p,$v) ON CONFLICT(path) DO UPDATE SET metadata=excluded.metadata", item.UploadPath, JsonSerializer.Serialize(item));
+    }
+    internal void Discard(QueueItem item)
+    {
+        using var tx = db.BeginTransaction();
+        Remove(item);
+        tx.Commit();
     }
     private void Remove(QueueItem item)
     {

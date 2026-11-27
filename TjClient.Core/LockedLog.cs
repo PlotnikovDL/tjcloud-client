@@ -18,6 +18,14 @@ public sealed class LockedLog : IDisposable
         Stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 65536, FileOptions.SequentialScan);
         try { Verify(); } catch { Stream.Dispose(); throw; }
     }
+    internal bool StartsWithUtf8Marker()
+    {
+        Span<byte> prefix = stackalloc byte[3];
+        Stream.Position = 0;
+        Stream.ReadExactly(prefix);
+        return prefix.SequenceEqual("\uFEFF"u8);
+    }
+
     public string Hash()
     {
         Stream.Position = 0;
