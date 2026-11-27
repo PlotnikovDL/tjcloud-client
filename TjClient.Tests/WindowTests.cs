@@ -6,6 +6,19 @@ namespace TjClient.Wpf;
 
 static class WindowTests
 {
+    public static void PausedHistory() => CompactWindowTests.InSta(async () =>
+    {
+        using var fixture = new Fixture();
+        var server = new MemoryCollector();
+        using var http = new HttpClient(new Handler(server.Handle));
+        var window = new MainWindow(fixture.Root, false, p => new CollectorClient(p.Endpoint, p.Token, http)) { ShowActivated = false };
+        try
+        {
+            window.Show();
+            await window.TestPausedHistory(fixture, server);
+        }
+        finally { window.DisposeTestWindow(); }
+    });
     public static void RestoredSendAndAcceptedRetry() => CompactWindowTests.InSta(async () =>
     {
         foreach (var running in new[] { true, false })
@@ -59,6 +72,67 @@ static class WindowTests
 // Компилируется только тестами вместе с неизменёнными XAML и code-behind окна.
 public partial class MainWindow
 {
+    internal async Task TestPausedHistory(Fixture fixture, MemoryCollector server)
+    {
+        const string old = "rphost_1/26030101.log", boundary = "rphost_1/26030102.log", accepted = "rphost_1/26030103.log";
+        var since = new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Local);
+        File.SetLastWriteTimeUtc(fixture.File("exports/" + old, "old"), since.ToUniversalTime().AddSeconds(-1));
+        File.SetLastWriteTimeUtc(fixture.File("exports/" + boundary, "boundary"), since.ToUniversalTime());
+        FolderBox.Text = Path.Combine(fixture.Root, "exports");
+        EndpointBox.Text = "https://localhost";
+        TokenBox.Password = "synthetic";
+
+        async Task Check()
+        {
+            CheckButton.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            await operationsDrained.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        await Check();
+        FinishedCheck.IsChecked = RecipientCheck.IsChecked = true;
+        await Start(true);
+        Assert.True(running && !ModePanel.IsEnabled);
+        Assert.Equal(0, server.Registrations);
+        fixture.File("exports/" + accepted, "accepted");
+        await Cycle();
+        server.State = "imported";
+        await Cycle();
+        using var queue = OpenQueue(profile);
+        var imported = queue.All().Single(x => x.File.RelativePath == accepted);
+        Assert.Equal(QueueState.Imported, imported.State);
+        Assert.Equal(1, server.Registrations);
+
+        PauseButton.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+        SettingsExpander.IsExpanded = true;
+        Assert.True(SinceRadio.IsEnabled, "После паузы должен быть доступен исторический режим");
+        SinceRadio.IsChecked = true;
+        Assert.True(SincePicker.IsEnabled);
+        await Check();
+        Assert.True(!RecipientCheck.IsEnabled && checkedProfile == null, "Для исторического режима нужна дата");
+        SincePicker.SelectedDate = since;
+        await Check();
+        Assert.True(RecipientCheck.IsEnabled && RecipientCheck.IsChecked != true);
+        Assert.Equal(2, queue.All().Count(x => x.State == QueueState.Baseline));
+        Assert.Equal(1, server.Registrations);
+        await Start(true);
+        Assert.True(!running, "Для нового периода требуется подтверждение получателя");
+        Assert.Equal(2, queue.All().Count(x => x.State == QueueState.Baseline));
+
+        // Коллектор теста обслуживает одну активную передачу.
+        server.Bytes.SetLength(0);
+        server.State = "uploading";
+        RecipientCheck.IsChecked = true;
+        await Start(true);
+        Assert.True(running);
+        Assert.Equal(QueueState.Baseline, queue.All().Single(x => x.File.RelativePath == old).State);
+        Assert.Equal(QueueState.Delivered, queue.All().Single(x => x.File.RelativePath == boundary).State);
+        Assert.Equal(imported, queue.All().Single(x => x.File.RelativePath == accepted));
+        Assert.Equal(boundary, server.Relative);
+        Assert.Equal(2, server.Registrations);
+        Assert.Equal(2, server.Completions);
+        await Cycle();
+        Assert.Equal(2, server.Registrations);
+        Pause();
+    }
     internal async Task TestRestoredSendAndAcceptedRetry(Fixture fixture, MemoryCollector server, bool wasRunning)
     {
         var deadline = DateTime.UtcNow.AddSeconds(5);

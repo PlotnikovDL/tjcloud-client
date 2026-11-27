@@ -51,7 +51,7 @@ static class CompactWindowTests
         using (var queue = new QueueStore(Path.Combine(fixture.Root, saved.QueueKey + ".db")))
             queue.BeginObservation(saved.Folder, [], saved.Mode, saved.Since);
         var existing = new MainWindow(fixture.Root, false) { ShowActivated = false };
-        try { existing.AssertLockedPeriod(); }
+        try { existing.AssertPausedPeriod(); }
         finally { existing.DisposeTestWindow(); }
         return Task.CompletedTask;
     });
@@ -149,12 +149,12 @@ public partial class MainWindow
         SetBusy(false);
         Assert.True(SincePicker.IsEnabled);
     }
-    internal void AssertLockedPeriod()
+    internal void AssertPausedPeriod()
     {
         Assert.True(SinceRadio.IsChecked == true && NewFilesRadio.IsChecked == false);
-        Assert.True(!SinceRadio.IsEnabled && !NewFilesRadio.IsEnabled && !SincePicker.IsEnabled, "Сохранённый период очереди заблокирован");
-        IntervalBox.Text = "90";
-        Assert.True(!SincePicker.IsEnabled && !ModePanel.IsEnabled, "Интервал не разблокирует период очереди");
+        Assert.True(SinceRadio.IsEnabled && NewFilesRadio.IsEnabled && SincePicker.IsEnabled, "На паузе можно изменить сохранённый период");
+        NewFilesRadio.IsChecked = true;
+        Assert.True(!SincePicker.IsEnabled && RecipientCheck.IsChecked == false);
     }
     internal void AssertNewProfile()
     {

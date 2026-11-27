@@ -27,7 +27,6 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(1) };
     private ClientProfile profile = new();
     private ClientProfile? checkedProfile;
-    private IReadOnlyList<LocalFile>? previewSnapshot;
     private CancellationTokenSource? cancellation;
     private bool loading = true, busy, running, exiting;
     private int failures;
@@ -210,7 +209,7 @@ public partial class MainWindow : Window
     private void InvalidateCheck(bool resetQueue = false)
     {
         if (loading) return;
-        checkedProfile = null; previewSnapshot = null;
+        checkedProfile = null;
         if (resetQueue) existingQueue = false;
         RecipientCheck.IsChecked = false; RecipientCheck.IsEnabled = false;
         UpdateModeAvailability();
@@ -246,7 +245,7 @@ public partial class MainWindow : Window
         using var operation = AdmitOperation();
         if (operation == null) return;
         SetBusy(true);
-        checkedProfile = null; previewSnapshot = null;
+        checkedProfile = null;
         UpdateRecipient();
         StatusText.Text = "Проверка параметров и завершённых выгрузок...";
         RecipientCheck.IsChecked = false; RecipientCheck.IsEnabled = false;
@@ -263,23 +262,21 @@ public partial class MainWindow : Window
             ct.ThrowIfCancellationRequested();
             using var queue = OpenQueue(candidate);
             existingQueue = queue.Initialized;
-            var known = queue.All();
-            var knownPaths = known.Select(x => x.File.RelativePath).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var selected = existingQueue
-                ? known.Where(x => x.State is QueueState.Pending or QueueState.Uploading or QueueState.Retry).Select(x => x.File).Concat(queue.SelectForDiscovery(snapshot).Where(x => !knownPaths.Contains(x.RelativePath))).ToList()
-                : PreviewPlan.Select(candidate, snapshot);
-            await Task.Run(() => { foreach (var file in selected) { ct.ThrowIfCancellationRequested(); using var locked = new LockedLog(candidate.Folder, file); locked.Verify(); } }, ct);
+            var preview = existingQueue
+                ? queue.PreviewPeriod(snapshot, candidate.Mode, candidate.Since)
+                : PreviewPlan.Select(candidate, snapshot).Select(x => new QueueItem(x)).ToList();
+            var selected = preview.Where(x => x.State is QueueState.Pending or QueueState.Uploading or QueueState.Retry);
+            await Task.Run(() => { foreach (var item in selected) { ct.ThrowIfCancellationRequested(); using var locked = new LockedLog(candidate.Folder, item.File); locked.Verify(); } }, ct);
             ct.ThrowIfCancellationRequested();
-            previewSnapshot = snapshot;
             checkedProfile = candidate;
             profile = candidate;
             UpdateRecipient();
             RecipientCheck.IsEnabled = true;
             RecipientCheck.IsChecked = false;
 
-            StatusText.Text = existingQueue ? "Проверка пройдена. Сохранённая очередь будет продолжена, начальный режим уже закреплён." : "Проверка пройдена. Журналы не передавались. Подтвердите папку и получателя.";
+            StatusText.Text = "Проверка пройдена. Проверьте список файлов и подтвердите папку и получателя.";
             LastContactText.Text = $"Последняя успешная связь: {DateTime.Now:G}";
-            ShowQueue(existingQueue ? known : selected.Select(x => new QueueItem(x)).ToList());
+            ShowQueue(preview);
             SaveProfile();
         }
         catch (OperationCanceledException) { StatusText.Text = "Проверка отменена. Передача не начиналась."; }
@@ -299,21 +296,22 @@ public partial class MainWindow : Window
         if (operation == null) return;
         try
         {
-            if (checkedProfile == null || previewSnapshot == null) throw new InvalidOperationException("Сначала нажмите «Проверить».");
+            if (checkedProfile == null) throw new InvalidOperationException("Сначала нажмите «Проверить».");
             if (FinishedCheck.IsChecked != true || RecipientCheck.IsChecked != true) throw new InvalidOperationException("Нужно подтвердить завершённость файлов и передачу получателю.");
-            profile = checkedProfile.Approve() with { Running = schedule, Startup = StartupBox.IsChecked == true };
-            profile.RequireConsent();
+            var selected = checkedProfile.Approve() with { Startup = StartupBox.IsChecked == true };
+            selected.RequireConsent();
             startIntentPending = true;
             SetBusy(true);
             cancellation = new CancellationTokenSource();
             try
             {
-                var selected = profile;
-                var snapshot = previewSnapshot;
-                await Task.Run(() => { using var queue = OpenQueue(selected); queue.BeginObservation(selected.Folder, snapshot, selected.Mode, selected.Since); });
-                // Persist only after the baseline exists, using the latest intent (a Pause may have intervened).
+                await Task.Run(() => { using var queue = OpenQueue(selected); queue.ConfirmObservation(selected.Folder, selected.Mode, selected.Since); });
                 existingQueue = true;
-                SaveProfile();
+                var confirmed = selected with { Running = schedule && startIntentPending };
+                if (FinishedCheck.IsChecked != true || RecipientCheck.IsChecked != true)
+                    confirmed = confirmed with { Running = false, ConsentBinding = "" };
+                SaveProfile(confirmed);
+                profile = confirmed;
                 startIntentPending = false;
                 running = profile.Running;
                 cancellation.Token.ThrowIfCancellationRequested();
@@ -446,12 +444,12 @@ public partial class MainWindow : Window
         catch (Exception error) { OperationFailed(error); }
     }
     private QueueStore OpenQueue(ClientProfile value) => new(Path.Combine(stateDirectory, value.QueueKey + ".db"));
-    private void SaveProfile() { if (!smoke) ProtectedStore.Save(settingsPath, profile); }
+    private void SaveProfile(ClientProfile? value = null) { if (!smoke) ProtectedStore.Save(settingsPath, value ?? profile); }
     private void UpdateModeAvailability()
     {
-        ModePanel.IsEnabled = !existingQueue && !busy && !running && !updateQuiescing;
+        ModePanel.IsEnabled = !busy && !running && !updateQuiescing;
         SincePicker.IsEnabled = ModePanel.IsEnabled && SinceRadio.IsChecked == true;
-        ModeCaption.Text = existingQueue ? "Период очереди закреплён" : SinceRadio.IsChecked == true ? "Существующие по дате изменения" : "Только новые файлы";
+        ModeCaption.Text = SinceRadio.IsChecked == true ? "Существующие по дате изменения" : "Только новые файлы";
     }
     private void SetBusy(bool value)
     {

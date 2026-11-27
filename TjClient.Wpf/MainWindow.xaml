@@ -29,7 +29,7 @@
           <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
           <TextBlock Text="Адрес сервиса" VerticalAlignment="Center" Margin="0,0,0,8"/><TextBox Grid.Column="1" x:Name="EndpointBox" Margin="0,0,0,8" ToolTip="https://имя-сервера без подпути, параметров и логина"/>
           <TextBlock Grid.Row="1" Text="Интервал, секунд" VerticalAlignment="Center" Margin="0,0,0,8"/><StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,8"><TextBox x:Name="IntervalBox" Width="90" Text="60"/><TextBlock Text="от 5 до 86400" VerticalAlignment="Center" Margin="12,0,0,0" Foreground="#56657B"/></StackPanel>
-          <TextBlock Grid.Row="2" Text="Начальный режим" VerticalAlignment="Center"/>
+          <TextBlock Grid.Row="2" Text="Режим отбора" VerticalAlignment="Center"/>
           <StackPanel Grid.Row="2" Grid.Column="1" x:Name="ModePanel" Margin="0,0,0,4">
             <RadioButton x:Name="NewFilesRadio" GroupName="InitialMode" Content="Только новые файлы после начала наблюдения" IsChecked="True" Height="32" VerticalContentAlignment="Center"/>
             <StackPanel Orientation="Horizontal"><RadioButton x:Name="SinceRadio" GroupName="InitialMode" Content="Существующие с датой изменения от" Height="32" VerticalContentAlignment="Center"/><DatePicker x:Name="SincePicker" Width="150" Height="32" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Margin="12,0,0,0"/></StackPanel>
