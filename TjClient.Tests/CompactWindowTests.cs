@@ -49,7 +49,7 @@ static class CompactWindowTests
             Mode = InitialMode.ModifiedSince, Since = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero) }.Approve();
         ProtectedStore.Save(Path.Combine(fixture.Root, "settings.dpapi"), saved);
         using (var queue = new QueueStore(Path.Combine(fixture.Root, saved.QueueKey + ".db")))
-            queue.BeginObservation(saved.Folder, [], saved.Mode, saved.Since);
+            queue.BeginObservation(saved.Folder, saved.Mode, saved.Since);
         var existing = new MainWindow(fixture.Root, false) { ShowActivated = false };
         try { existing.AssertPausedPeriod(); }
         finally { existing.DisposeTestWindow(); }
@@ -93,10 +93,13 @@ public partial class MainWindow
         Assert.True(FindName("SettingsExpander") is System.Windows.Controls.Expander, "Настройки должны быть раскрываемыми");
         var expander = (System.Windows.Controls.Expander)FindName("SettingsExpander");
         Assert.True(!expander.IsExpanded);
+        UpdateLayout();
+        Assert.Equal(32d, FolderBox.ActualHeight);
+        Assert.Equal(TokenBox.ActualHeight, FolderBox.ActualHeight);
         Assert.True(FolderBox.IsVisible && TokenBox.IsVisible && RecipientText.IsVisible && !EndpointBox.IsVisible);
         Assert.True(RecipientText.Text.Contains("https://app.tjcloud.ru") && RecipientText.Text.Contains("не проверен"));
-        Assert.True(FinishedCheck.IsVisible && RecipientCheck.IsVisible);
-        Assert.True(FinishedCheck.ToolTip?.ToString()?.Contains("Активная папка ТЖ") == true);
+        Assert.True(FindName("FinishedCheck") == null && RecipientCheck.IsVisible);
+        Assert.True(RecipientCheck.ToolTip?.ToString()?.Contains("события") == true);
         Assert.Equal(3, QueueGrid.Columns.Count);
         Assert.Equal("Файл", QueueGrid.Columns[0].Header.ToString());
         Assert.Equal("Передано", QueueGrid.Columns[2].Header.ToString());
@@ -161,7 +164,7 @@ public partial class MainWindow
         Assert.Equal("https://app.tjcloud.ru", EndpointBox.Text);
         Assert.True(NewFilesRadio.IsChecked == true && SinceRadio.IsChecked == false);
         Assert.True(StartupBox.IsChecked == false && !running && !busy);
-        Assert.True(TokenBox.Password.Length == 0 && RecipientCheck.IsChecked != true && FinishedCheck.IsChecked != true);
+        Assert.True(TokenBox.Password.Length == 0 && RecipientCheck.IsChecked != true);
     }
     internal void AssertSavedProfile(ClientProfile saved)
     {
@@ -169,7 +172,7 @@ public partial class MainWindow
         Assert.True(TokenBox.Password == saved.Token, "Сохранённый ключ не должен меняться");
         Assert.Equal(saved.Since?.LocalDateTime.Date, SincePicker.SelectedDate?.Date);
         Assert.True(SinceRadio.IsChecked == true && NewFilesRadio.IsChecked == false);
-        Assert.True(StartupBox.IsChecked == true && RecipientCheck.IsChecked == true && FinishedCheck.IsChecked == true);
+        Assert.True(StartupBox.IsChecked == true && RecipientCheck.IsChecked == true);
         Assert.True(profile.ConsentBinding == saved.ConsentBinding && !running && !busy);
     }
 }

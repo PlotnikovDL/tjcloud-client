@@ -127,14 +127,14 @@ internal static class UpdaterIntegration
             File.WriteAllText(FileAt(logs, "rphost_1/26112501.log"), "synthetic updater cross-process transfer\n");
             var state = FileAt(root, "state");
             var profile = new ClientProfile { Folder = logs, Endpoint = server.Address, Token = "synthetic-updater-fixture",
-                SourceId = 1, Running = input.Running, IntervalSeconds = 5, Mode = InitialMode.ModifiedSince,
+                SourceId = 1, Running = input.Running, IntervalSeconds = 60, Mode = InitialMode.ModifiedSince,
                 Since = DateTimeOffset.MinValue }.Approve();
             ProtectedStore.Save(FileAt(state, "settings.dpapi"), profile);
             File.Copy(FileAt(state, "settings.dpapi"), FileAt(root, "baseline.dpapi"));
             using (var queue = new QueueStore(FileAt(state, profile.QueueKey + ".db")))
             {
                 queue.Bind(profile.Folder, profile.Endpoint, profile.SourceId);
-                queue.BeginObservation(profile.Folder, [], profile.Mode, profile.Since);
+                queue.BeginObservation(profile.Folder, profile.Mode, profile.Since);
             }
             Write(root, "server-ready.json", new { pid = Environment.ProcessId, installerHash = Hash(File.ReadAllBytes(input.Setup)), version = input.TargetVersion });
             await Wait(root, "server-stop", 360);
@@ -210,9 +210,8 @@ internal static class UpdaterIntegration
                                 using var queue = new QueueStore(FileAt(root, "state/" + before.QueueKey + ".db"));
                                 var item = queue.All().Single();
                                 Require(item.UploadId == before.UploadId && item.Offset == item.File.Size && item.State is QueueState.Delivered or QueueState.Imported, "RESUMED_SAME_UPLOAD");
-                                // Let a subsequent scheduled cycle reconcile accepted state, without resending.
-                                await Task.Delay(TimeSpan.FromSeconds(7));
-                                await window.UpdaterWaitIdle();
+                                // Проверяем следующий опрос после принятия передачи.
+                                await window.UpdaterOneShot();
                             }
                             else
                             {

@@ -18,15 +18,17 @@ public sealed record ClientProfile
     private string Binding => Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(QueueKey + "\n" + Token + "\n" + Mode + "\n" + Since?.UtcTicks)));
     public ClientProfile ChangeEndpoint(string endpoint) => endpoint == Endpoint ? this : this with { Endpoint = endpoint, Token = "", SourceId = 0, SourceName = "", ConsentBinding = "", Running = false };
     public ClientProfile ChangeFolder(string folder) => folder == Folder ? this : this with { Folder = folder, ConsentBinding = "", Mode = InitialMode.NewFiles, Since = null, Running = false };
+    public static bool ValidInterval(int seconds) => seconds is >= 60 and <= 86400;
+    public ClientProfile UpgradeInterval() => IntervalSeconds is >= 5 and < 60 ? this with { IntervalSeconds = 60 } : this;
     public ClientProfile Approve()
     {
-        if (SourceId <= 0 || string.IsNullOrWhiteSpace(Token) || !Path.IsPathFullyQualified(Folder) || IntervalSeconds is < 5 or > 86400
+        if (SourceId <= 0 || string.IsNullOrWhiteSpace(Token) || !Path.IsPathFullyQualified(Folder) || !ValidInterval(IntervalSeconds)
             || (Mode == InitialMode.ModifiedSince && Since == null)) throw new InvalidOperationException("Проверьте папку, источник, интервал и дату.");
         return this with { ConsentBinding = Binding };
     }
     public void RequireConsent()
     {
-        if (ConsentBinding.Length == 0 || ConsentBinding != Binding) throw new InvalidOperationException("Подтвердите завершённость файлов, выбранную папку и получателя после проверки.");
+        if (!ValidInterval(IntervalSeconds) || ConsentBinding.Length == 0 || ConsentBinding != Binding) throw new InvalidOperationException("Проверьте папку и подтвердите передачу событий выбранному получателю.");
     }
 }
 

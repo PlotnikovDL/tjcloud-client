@@ -82,7 +82,6 @@ public partial class MainWindow
         while (busy) await Task.Delay(20);
         Assert.True(checkedProfile != null && RecipientText.Text.EndsWith(" - проверен"));
         Assert.True(!RecipientText.Text.Contains(FolderBox.Text) && !RecipientText.Text.Contains("ID"));
-        FinishedCheck.IsChecked = true;
         RecipientCheck.IsChecked = true;
         ShowQueue(new[]
         {
@@ -118,7 +117,7 @@ public partial class MainWindow
         await Task.Delay(80);
         UpdateLayout();
         Assert.True(QueueGrid.ActualHeight >= 85, "Таблица должна оставаться видимой при раскрытых настройках");
-        foreach (var control in new FrameworkElement[] { FolderBox, TokenBox, RecipientText, FinishedCheck, RecipientCheck,
+        foreach (var control in new FrameworkElement[] { FolderBox, TokenBox, RecipientText, RecipientCheck,
             CheckButton, StartButton, PauseButton, MoreButton, QueueGrid, TotalText, LastContactText, SincePicker, StartupBox, ModeCaption })
         {
             if (!control.IsVisible) continue;

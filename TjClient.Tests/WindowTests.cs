@@ -6,6 +6,26 @@ namespace TjClient.Wpf;
 
 static class WindowTests
 {
+    public static void PollIntervals() => CompactWindowTests.InSta(async () =>
+    {
+        foreach (int savedSeconds in new[] { 30, 300 })
+        {
+            using var fixture = new Fixture();
+            var server = new MemoryCollector();
+            using var http = new HttpClient(new Handler(server.Handle));
+            var saved = new ClientProfile { Folder = fixture.Root, Endpoint = "https://localhost", Token = "synthetic", SourceId = 1, Running = true }.Approve();
+            var path = Path.Combine(fixture.Root, "settings.dpapi");
+            ProtectedStore.Save(path, saved with { IntervalSeconds = savedSeconds });
+            var window = new MainWindow(fixture.Root, false, p => new CollectorClient(p.Endpoint, p.Token, http)) { ShowActivated = false };
+            try
+            {
+                window.Show();
+                await window.TestPollIntervals(savedSeconds == 30 ? 60 : 300);
+            }
+            finally { window.DisposeTestWindow(); }
+        }
+    });
+
     public static void PausedHistory() => CompactWindowTests.InSta(async () =>
     {
         using var fixture = new Fixture();
@@ -30,7 +50,7 @@ static class WindowTests
                 SourceId = 1, Running = running, IntervalSeconds = 86400 }.Approve();
             ProtectedStore.Save(Path.Combine(fixture.Root, "settings.dpapi"), saved);
             using (var queue = new QueueStore(Path.Combine(fixture.Root, saved.QueueKey + ".db")))
-                queue.BeginObservation(root, [], saved.Mode, saved.Since);
+                queue.BeginObservation(root, saved.Mode, saved.Since);
             var server = new MemoryCollector();
             using var http = new HttpClient(new Handler(server.Handle));
             var window = new MainWindow(fixture.Root, false, p => new CollectorClient(p.Endpoint, p.Token, http)) { ShowActivated = false };
@@ -72,12 +92,39 @@ static class WindowTests
 // Компилируется только тестами вместе с неизменёнными XAML и code-behind окна.
 public partial class MainWindow
 {
+    internal async Task TestPollIntervals(int expected)
+    {
+        await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+        await operationsDrained.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(running && !busy);
+        double remaining = (nextCycle - DateTimeOffset.UtcNow).TotalSeconds;
+        Assert.True(remaining > expected - 5 && remaining <= expected);
+        Assert.Equal(expected.ToString(), IntervalBox.Text);
+        Assert.Equal(expected, ProtectedStore.Load<ClientProfile>(settingsPath)!.IntervalSeconds);
+        Pause();
+        foreach (int seconds in new[] { 59, 86401, 60, 86400 })
+        {
+            IntervalBox.Text = seconds.ToString();
+            CheckClick(this, new RoutedEventArgs());
+            await operationsDrained.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            if (seconds is 59 or 86401)
+                Assert.True(checkedProfile == null && StatusText.Text.Contains("от 60 до 86 400"));
+            else
+            {
+                Assert.True(RecipientCheck.IsEnabled);
+                RecipientCheck.IsChecked = true;
+                await Start(false);
+                Assert.Equal(seconds, ProtectedStore.Load<ClientProfile>(settingsPath)!.IntervalSeconds);
+            }
+        }
+    }
+
     internal async Task TestPausedHistory(Fixture fixture, MemoryCollector server)
     {
         const string old = "rphost_1/26030101.log", boundary = "rphost_1/26030102.log", accepted = "rphost_1/26030103.log";
         var since = new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Local);
-        File.SetLastWriteTimeUtc(fixture.File("exports/" + old, "old"), since.ToUniversalTime().AddSeconds(-1));
-        File.SetLastWriteTimeUtc(fixture.File("exports/" + boundary, "boundary"), since.ToUniversalTime());
+        File.SetLastWriteTimeUtc(fixture.File("exports/" + old, "00:01.000001-0,EXCP,0,Descr=old\n"), since.ToUniversalTime().AddSeconds(-1));
+        File.SetLastWriteTimeUtc(fixture.File("exports/" + boundary, "00:01.000001-0,EXCP,0,Descr=boundary\n"), since.ToUniversalTime());
         FolderBox.Text = Path.Combine(fixture.Root, "exports");
         EndpointBox.Text = "https://localhost";
         TokenBox.Password = "synthetic";
@@ -88,17 +135,16 @@ public partial class MainWindow
             await operationsDrained.Task.WaitAsync(TimeSpan.FromSeconds(5));
         }
         await Check();
-        FinishedCheck.IsChecked = RecipientCheck.IsChecked = true;
+        RecipientCheck.IsChecked = true;
         await Start(true);
         Assert.True(running && !ModePanel.IsEnabled);
         Assert.Equal(0, server.Registrations);
-        fixture.File("exports/" + accepted, "accepted");
+        fixture.File("exports/" + accepted, "00:01.000001-0,EXCP,0,Descr=accepted\n");
         await Cycle();
         server.State = "imported";
         await Cycle();
         using var queue = OpenQueue(profile);
-        var imported = queue.All().Single(x => x.File.RelativePath == accepted);
-        Assert.Equal(QueueState.Imported, imported.State);
+        Assert.Equal(0, queue.All().Count);
         Assert.Equal(1, server.Registrations);
 
         PauseButton.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
@@ -111,11 +157,11 @@ public partial class MainWindow
         SincePicker.SelectedDate = since;
         await Check();
         Assert.True(RecipientCheck.IsEnabled && RecipientCheck.IsChecked != true);
-        Assert.Equal(2, queue.All().Count(x => x.State == QueueState.Baseline));
+        Assert.Equal(0, queue.All().Count);
         Assert.Equal(1, server.Registrations);
         await Start(true);
         Assert.True(!running, "Для нового периода требуется подтверждение получателя");
-        Assert.Equal(2, queue.All().Count(x => x.State == QueueState.Baseline));
+        Assert.Equal(0, queue.All().Count);
 
         // Коллектор теста обслуживает одну активную передачу.
         server.Bytes.SetLength(0);
@@ -123,10 +169,10 @@ public partial class MainWindow
         RecipientCheck.IsChecked = true;
         await Start(true);
         Assert.True(running);
-        Assert.Equal(QueueState.Baseline, queue.All().Single(x => x.File.RelativePath == old).State);
+        Assert.True(queue.All().All(x => x.File.RelativePath != old));
         Assert.Equal(QueueState.Delivered, queue.All().Single(x => x.File.RelativePath == boundary).State);
-        Assert.Equal(imported, queue.All().Single(x => x.File.RelativePath == accepted));
-        Assert.Equal(boundary, server.Relative);
+        Assert.True(queue.All().All(x => x.File.RelativePath != accepted));
+        Assert.True(server.Relative.EndsWith("/" + boundary));
         Assert.Equal(2, server.Registrations);
         Assert.Equal(2, server.Completions);
         await Cycle();
@@ -138,7 +184,7 @@ public partial class MainWindow
         var deadline = DateTime.UtcNow.AddSeconds(5);
         while ((running != wasRunning || busy) && DateTime.UtcNow < deadline) await Task.Delay(20);
         Assert.True(!busy && running == wasRunning);
-        var path = fixture.File("exports/rphost_1/26112501.log", "synthetic");
+        var path = fixture.File("exports/rphost_1/26112501.log", "00:01.000001-0,EXCP,0,Descr=synthetic\n");
         SendButton.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.MenuItem.ClickEvent));
         deadline = DateTime.UtcNow.AddSeconds(5);
         while (busy && DateTime.UtcNow < deadline) await Task.Delay(20);
@@ -162,7 +208,7 @@ public partial class MainWindow
         ShowQueue(queue.All());
         QueueGrid.SelectedIndex = 0;
         await ClickRetryWithAnswer(true);
-        Assert.Equal(QueueState.Imported, queue.All().Single().State);
+        Assert.Equal(0, queue.All().Count);
         Assert.Equal(1, server.Registrations);
         Assert.Equal(1, server.Completions);
 
@@ -214,12 +260,11 @@ public partial class MainWindow
         var root = Path.Combine(stateDirectory, "exports");
         var path = Path.Combine(root, "rphost_1", "26112501.log");
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllText(path, "synthetic oversized file");
+        File.WriteAllText(path, "00:01.000001-0,EXCP,0,Descr=synthetic oversized file\n");
         profile = new ClientProfile { Folder = root, Endpoint = server.Address, Token = "synthetic", SourceId = 1,
             Mode = InitialMode.ModifiedSince, Since = DateTimeOffset.MinValue }.Approve();
-        FinishedCheck.IsChecked = true;
         RecipientCheck.IsChecked = true;
-        using (var queue = OpenQueue(profile)) queue.BeginObservation(root, [], profile.Mode, profile.Since);
+        using (var queue = OpenQueue(profile)) queue.BeginObservation(root, profile.Mode, profile.Since);
         await Cycle();
         using (var queue = OpenQueue(profile))
         {
@@ -233,12 +278,7 @@ public partial class MainWindow
         QueueGrid.SelectedIndex = 0;
         await ClickRetryWithAnswer(false);
         using (var queue = OpenQueue(profile)) Assert.Equal(QueueState.Error, queue.All().Single().State);
-        File.Move(path, path + ".holding");
-        QueueGrid.SelectedIndex = 0;
-        await ClickRetryWithAnswer(true);
-        using (var queue = OpenQueue(profile)) Assert.Equal(QueueState.Error, queue.All().Single().State);
-        Assert.Equal(0, server.Collector.Registrations);
-        File.Move(path + ".holding", path);
+        File.Delete(path);
         QueueGrid.SelectedIndex = 0;
         await ClickRetryWithAnswer(true);
         using (var queue = OpenQueue(profile)) Assert.Equal(QueueState.Delivered, queue.All().Single().State);

@@ -25,8 +25,8 @@ var tests = new List<(string Name, Action Run)>
 };
 tests.Add(("test_fixtures_respect_isolated_temporary_root", FixtureTests.IsolatedTemporaryRoot));
 tests.Add(("scanner_accepts_only_valid_process_log_paths", ScannerTests.ValidPaths));
-tests.Add(("reader_denies_writers_and_reparse_paths", ScannerTests.SafeRead));
-tests.Add(("sqlite_queue_persists_baseline_progress_and_quota", QueueTests.Persistence));
+tests.Add(("reader_allows_writers_and_rejects_reparse_paths", ScannerTests.SafeRead));
+tests.Add(("offline_batches_survive_deletion_restart_ack_loss_and_quota", QueueTests.Persistence));
 tests.Add(("transport_uses_exact_protocol_and_gzip_hash", TransportTests.Protocol));
 tests.Add(("transport_classifies_errors_without_response_secrets", TransportTests.Errors));
 tests.Add(("engine_streams_file_then_polls_import_without_resending", EngineTests.Delivery));
@@ -37,7 +37,7 @@ tests.Add(("real_https_rejects_wrong_ca_name_and_redirect", TlsTests.Certificate
 tests.Add(("preview_and_reconfiguration_never_reuse_recipient_secret", ProfileTests.Reconfigure));
 tests.Add(("repeated_transient_without_progress_increases_backoff", EngineTests.Backoff));
 tests.Add(("delivered_file_changes_and_conflicts_stop_following_files", EngineTests.DeliveredConflict));
-tests.Add(("queue_binds_root_origin_source_and_caps_scan", QueueTests.Scope));
+tests.Add(("queue_binds_root_origin_and_source", QueueTests.Scope));
 tests.Add(("lost_complete_ack_does_not_repeat_import", EngineTests.LostComplete));
 tests.Add(("permanent_upload_errors_stop_and_do_not_backoff", EngineTests.PermanentErrors));
 tests.Add(("server_413_preserves_file_error_and_continues_queue", EngineTests.ServerSizeLimit));
@@ -46,7 +46,7 @@ tests.Add(("pause_cancels_without_unconfirmed_offset", EngineTests.Cancellation)
 tests.Add(("new_files_baseline_is_taken_at_start_not_earlier_preview", QueueTests.ObservationBoundary));
 tests.Add(("accepted_upload_never_regresses_to_resend", EngineTests.StateRegression));
 tests.Add(("modified_since_covers_start_snapshot_and_late_historical_files", QueueTests.ModifiedSinceBoundary));
-tests.Add(("confirmed_period_preserves_progress_quota_and_discovery_after_restart", QueueTests.ConfirmedPeriod));
+tests.Add(("confirmed_history_and_live_ranges_do_not_overlap_after_restart", QueueTests.ConfirmedPeriod));
 tests.Add(("real_https_truncated_body_persists_retry_and_recovers_ack", ResponseBodyTests.TruncatedAcknowledgement));
 tests.Add(("real_https_overall_timeout_covers_body_and_preserves_cancellation", ResponseBodyTests.OverallTimeout));
 
@@ -56,6 +56,9 @@ tests.Add(("reconcile_uploading_still_requires_available_unchanged_source", Engi
 tests.Add(("oversize_error_persists_without_blocking_or_automatic_retry", EngineTests.OversizeDoesNotBlock));
 tests.Add(("wpf_compact_new_profile_prod_saved_dev_unchanged_no_network", TjClient.Wpf.CompactWindowTests.ProfileDefaults));
 tests.Add(("wpf_compact_exclusive_modes_centered_date_paused_period", TjClient.Wpf.CompactWindowTests.ModesAndDate));
+tests.Add(("wpf_migrates_saved_poll_interval_before_first_cycle_and_checks_bounds", TjClient.Wpf.WindowTests.PollIntervals));
+tests.Add(("upgrade_resumes_legacy_partial_upload_and_tails_new_bytes", QueueTests.UpgradeInFlight));
+tests.Add(("baseline_utf8_marker_preserves_first_new_event", QueueTests.BaselineBom));
 tests.Add(("wpf_paused_period_backfills_only_confirmed_history", TjClient.Wpf.WindowTests.PausedHistory));
 tests.Add(("wpf_compact_disclosure_receiver_actions_lifecycle", TjClient.Wpf.CompactWindowTests.CompactSurface));
 tests.Add(("wpf_queue_readable_units_exact_bytes_tooltip_fits_column", TjClient.Wpf.QueuePresentationTests.ReadableProgress));

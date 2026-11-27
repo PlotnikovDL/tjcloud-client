@@ -92,7 +92,7 @@ static class UpdateStopTests
             SourceId = 1, Running = true, Startup = true }.Approve();
         ProtectedStore.Save(Path.Combine(fixture.Root, "settings.dpapi"), saved);
         using (var queue = new QueueStore(Path.Combine(fixture.Root, saved.QueueKey + ".db")))
-            queue.BeginObservation(saved.Folder, [], saved.Mode, saved.Since);
+            queue.BeginObservation(saved.Folder, saved.Mode, saved.Since);
         var original = File.ReadAllBytes(Path.Combine(fixture.Root, "settings.dpapi"));
         server.HangStatusBody = true;
         var window = new MainWindow(fixture.Root, false, value => new CollectorClient(value.Endpoint, value.Token, http));
