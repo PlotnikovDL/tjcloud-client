@@ -2,14 +2,26 @@ namespace TjClient.Core;
 
 public sealed class ClientEngine(string root, long sourceId, QueueStore queue, CollectorClient api)
 {
-    public event Action? Progress;
+    public event Action<QueueItem>? Progress;
     public async Task Run(CancellationToken ct = default)
     {
         queue.Bind(root, api.Endpoint.AbsoluteUri, sourceId);
         if (queue.All().Any(x => x.State == QueueState.Conflict)) throw new FileChangedException();
-        var status = await api.Status(ct);
+        CollectorStatus status;
+        try { status = await api.Status(ct); }
+        catch (TransportException error) when (error.Transient)
+        {
+            queue.Capture(root, queue.BatchLimit, ct);
+            throw;
+        }
         if (status.ProtocolVersion != 1 || status.SourceId != sourceId || status.ChunkBytes is < 1 or > 4194304 || status.MaxFileBytes <= 0)
             throw new InvalidDataException("Несовместимый протокол или изменился получатель.");
+        var target = Math.Min(status.MaxFileBytes, 1024 * 1024);
+        queue.RememberBatchLimit(target);
+        IOException? scanError = null;
+        bool hasRoom = true;
+        try { hasRoom = queue.Capture(root, target, ct); }
+        catch (IOException error) when (error is not FileChangedException) { scanError = error; }
         // Статус уже известной передачи не зависит от доступности исходного каталога.
         foreach (var known in queue.All().Where(x => x.UploadId != null && x.State is QueueState.Pending or QueueState.Uploading or QueueState.Retry or QueueState.Delivered or QueueState.Importing))
         {
@@ -22,13 +34,15 @@ public sealed class ClientEngine(string root, long sourceId, QueueStore queue, C
                 if (error.StatusCode is not (410 or 413)) throw;
             }
         }
-        var snapshot = LogScanner.Scan(root);
-        queue.Discover(snapshot);
-        var present = snapshot.Select(x => x.RelativePath).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var known in queue.All().Where(x => x.Hash.Length != 0 && x.State is QueueState.Delivered or QueueState.Importing or QueueState.Imported or QueueState.ImportFailed or QueueState.Expired or QueueState.ImportStatusUnavailable))
+        if (!hasRoom && scanError == null)
+        {
+            try { queue.Capture(root, target, ct); }
+            catch (IOException error) when (error is not FileChangedException) { scanError = error; }
+        }
+        foreach (var known in queue.All().Where(x => x.RangeStart == null && x.Hash.Length != 0 && x.State is QueueState.Delivered or QueueState.Importing or QueueState.Imported or QueueState.ImportFailed or QueueState.Expired or QueueState.ImportStatusUnavailable))
         {
             ct.ThrowIfCancellationRequested();
-            if (!present.Contains(known.File.RelativePath)) continue;
+            if (!File.Exists(Path.Combine(root, known.File.RelativePath))) continue;
             try
             {
                 using var locked = new LockedLog(root, known.File);
@@ -40,11 +54,11 @@ public sealed class ClientEngine(string root, long sourceId, QueueStore queue, C
         foreach (var item in queue.All().Where(x => x.State is QueueState.Pending or QueueState.Uploading or QueueState.Retry))
         {
             ct.ThrowIfCancellationRequested();
-            if (item.NextAttemptTicks > DateTimeOffset.UtcNow.UtcTicks) continue;
+            if (item.NextAttemptTicks > DateTimeOffset.UtcNow.UtcTicks || (scanError != null && item.RangeStart == null)) continue;
             try { await Transfer(item, status, ct); }
             catch (FileChangedException error)
             {
-                Save(queue.All().Single(x => x.File.RelativePath == item.File.RelativePath) with { State = QueueState.Conflict, Error = error.Message });
+                Save(queue.All().Single(x => x.UploadPath == item.UploadPath) with { State = QueueState.Conflict, Error = error.Message });
                 throw;
             }
             catch (TransportException error)
@@ -53,6 +67,7 @@ public sealed class ClientEngine(string root, long sourceId, QueueStore queue, C
                 if (error.StatusCode is not (410 or 413)) throw;
             }
         }
+        if (scanError != null) throw scanError;
     }
     private async Task Transfer(QueueItem item, CollectorStatus status, CancellationToken ct)
     {
@@ -62,37 +77,42 @@ public sealed class ClientEngine(string root, long sourceId, QueueStore queue, C
                 Error = $"Размер файла {item.File.Size} байт превышает лимит {Math.Min(status.MaxFileBytes, 2147483648L)} байт. Остальная очередь продолжается. После устранения причины нажмите «Повторить выбранное»." });
             return;
         }
-        using var locked = new LockedLog(root, item.File);
-        var hash = locked.Hash();
-        locked.Verify();
+        using var locked = item.RangeStart == null ? new LockedLog(root, item.File) : null;
+        var hash = locked?.Hash() ?? item.Hash;
+        locked?.Verify();
         if (item.Hash.Length != 0 && item.Hash != hash) throw new FileChangedException();
         item = item with { Hash = hash };
         Save(item);
         if (item.UploadId == null)
         {
-            item = Apply(item, await api.Register(item.File.RelativePath, item.File.Size, hash, ct));
+            item = Apply(item, await api.Register(item.UploadPath, item.File.Size, hash, ct));
             Save(item);
         }
         if (item.State != QueueState.Uploading) return;
-        locked.Stream.Position = item.Offset;
+        if (locked != null) locked.Stream.Position = item.Offset;
         while (item.Offset < item.File.Size)
         {
             ct.ThrowIfCancellationRequested();
-            var bytes = new byte[(int)Math.Min(status.ChunkBytes, item.File.Size - item.Offset)];
-            await locked.Stream.ReadExactlyAsync(bytes, ct);
+            int count = (int)Math.Min(status.ChunkBytes, item.File.Size - item.Offset);
+            byte[] bytes;
+            if (locked == null) bytes = queue.ReadPayload(item.UploadPath, item.Offset, count);
+            else
+            {
+                bytes = new byte[count];
+                await locked.Stream.ReadExactlyAsync(bytes, ct);
+            }
             var upload = await api.Chunk(item.UploadId!, item.Offset, bytes, ct);
             if (upload.ReceivedBytes != item.Offset + bytes.Length) throw new InvalidDataException("Сервер подтвердил неверное смещение.");
             item = Apply(item, upload);
             Save(item);
         }
-        locked.Verify();
-        if (locked.Hash() != hash) throw new FileChangedException();
-        locked.Verify();
+        if (locked != null && locked.Hash() != hash) throw new FileChangedException();
+        locked?.Verify();
         Save(Apply(item, await api.Complete(item.UploadId!, ct)));
     }
     private void SaveTransportFailure(QueueItem item, TransportException error)
     {
-        var saved = queue.All().Single(x => x.File.RelativePath == item.File.RelativePath);
+        var saved = queue.All().Single(x => x.UploadPath == item.UploadPath);
         var attempts = saved.Attempts + 1;
         var state = error.StatusCode switch
         {
@@ -107,10 +127,10 @@ public sealed class ClientEngine(string root, long sourceId, QueueStore queue, C
         Save(saved with { State = state, Attempts = attempts, NextAttemptTicks = nextAttempt,
             Error = state == QueueState.ImportStatusUnavailable ? "Файл принят. Статус импорта недоступен." : error.Message });
     }
-    private void Save(QueueItem item) { queue.Save(item); Progress?.Invoke(); }
+    private void Save(QueueItem item) { queue.Save(item); Progress?.Invoke(item); }
     private static QueueItem Apply(QueueItem item, Upload upload)
     {
-        if (!Guid.TryParse(upload.UploadId, out _) || upload.RelativePath != item.File.RelativePath || upload.SizeBytes != item.File.Size
+        if (!Guid.TryParse(upload.UploadId, out _) || upload.RelativePath != item.UploadPath || upload.SizeBytes != item.File.Size
             || upload.ReceivedBytes < 0 || upload.ReceivedBytes > item.File.Size || (item.UploadId != null && item.UploadId != upload.UploadId))
             throw new InvalidDataException("Некорректная идентичность передачи в ответе сервера.");
         var state = upload.Status switch

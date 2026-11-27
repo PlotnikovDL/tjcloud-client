@@ -8,12 +8,15 @@ static class ScannerTests
         var path = fixture.File("rphost_1/26112501.log", "synthetic");
         var file = LogScanner.Scan(fixture.Root).Single();
         using (var writer = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite))
-            Assert.Throws<IOException>(() => { using var read = new LockedLog(fixture.Root, file); });
+            using (var read = new LockedLog(fixture.Root, file, growing: true)) read.Verify();
         using (var read = new LockedLog(fixture.Root, file))
         {
             Assert.Equal(Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes("synthetic"))), read.Hash());
             read.Verify();
-            Assert.Throws<IOException>(() => { using var writer = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite); });
+            using var writer = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+            writer.WriteByte(10);
+            writer.Flush();
+            read.Verify();
         }
         using var outside = new Fixture();
         outside.File("rphost_1/26112502.log", "outside");

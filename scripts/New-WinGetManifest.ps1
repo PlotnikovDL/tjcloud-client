@@ -55,7 +55,7 @@ PackageName: '$($metadata.Product)'
 PackageUrl: '$($metadata.RepositoryUrl)'
 License: '$($metadata.License)'
 LicenseUrl: '$($metadata.RepositoryUrl)/blob/v$Version/LICENSE'
-ShortDescription: Клиент для передачи завершённых файлов технологического журнала 1С в TJCloud.
+ShortDescription: Клиент для передачи событий технологического журнала 1С в TJCloud.
 ManifestType: defaultLocale
 ManifestVersion: $schemaVersion
 "@

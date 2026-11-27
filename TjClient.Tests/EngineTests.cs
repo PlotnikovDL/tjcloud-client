@@ -13,9 +13,8 @@ static class EngineTests
         var server = new MemoryCollector { MaxFileBytes = 2 };
         using var http = new HttpClient(new Handler(server.Handle));
         using var api = new CollectorClient("https://localhost", "synthetic", http);
-        using (var queue = new QueueStore(db))
+        using (var queue = LegacyQueue.Open(db, fixture.Root))
         {
-            queue.Initialize(LogScanner.Scan(fixture.Root), InitialMode.ModifiedSince, DateTimeOffset.MinValue);
             var engine = new ClientEngine(fixture.Root, 1, queue, api);
             engine.Run().GetAwaiter().GetResult();
             var error = queue.All()[0];
@@ -43,9 +42,8 @@ static class EngineTests
             var server = new MemoryCollector { LoseCompleteReply = true };
             using var http = new HttpClient(new Handler(server.Handle));
             using var api = new CollectorClient("https://localhost", "synthetic", http);
-            using (var queue = new QueueStore(db))
+            using (var queue = LegacyQueue.Open(db, fixture.Root))
             {
-                queue.Initialize(LogScanner.Scan(fixture.Root), InitialMode.ModifiedSince, DateTimeOffset.MinValue);
                 Assert.Throws<TransportException>(() => new ClientEngine(fixture.Root, 1, queue, api).Run().GetAwaiter().GetResult());
                 queue.Save(queue.All().Single() with { NextAttemptTicks = 0 });
             }
@@ -53,7 +51,8 @@ static class EngineTests
             server.State = remote;
             using var reopened = new QueueStore(db);
             new ClientEngine(fixture.Root, 1, reopened, api).Run().GetAwaiter().GetResult();
-            Assert.Equal(remote == "queued" ? QueueState.Delivered : QueueState.Imported, reopened.All().Single().State);
+            if (remote == "queued") Assert.Equal(QueueState.Delivered, reopened.All().Single().State);
+            else Assert.Equal(0, reopened.All().Count);
             Assert.Equal(1, server.Gets);
             Assert.Equal(1, server.Registrations);
             Assert.Equal(1, server.Completions);
@@ -66,8 +65,7 @@ static class EngineTests
             using var fixture = new Fixture();
             fixture.File("logs/rphost_1/26112501.log", "synthetic unavailable root");
             var root = Path.Combine(fixture.Root, "logs");
-            using var queue = new QueueStore(Path.Combine(fixture.Root, "queue.db"));
-            queue.Initialize(LogScanner.Scan(root), InitialMode.ModifiedSince, DateTimeOffset.MinValue);
+            using var queue = LegacyQueue.Open(Path.Combine(fixture.Root, "queue.db"), root);
             var server = new MemoryCollector { LoseCompleteReply = loseReply };
             using var http = new HttpClient(new Handler(server.Handle));
             using var api = new CollectorClient("https://localhost", "synthetic", http);
@@ -76,12 +74,11 @@ static class EngineTests
             else engine.Run().GetAwaiter().GetResult();
             queue.Save(queue.All().Single() with { NextAttemptTicks = 0 });
             fixture.File("logs/rphost_1/26112502.log", "ещё не отправлено");
-            queue.Discover(LogScanner.Scan(root));
+            queue.Save(new(LogScanner.Scan(root).Single(x => x.RelativePath.EndsWith("02.log"))));
             Directory.Move(root, root + "-offline");
             server.State = "imported";
             Assert.Throws<DirectoryNotFoundException>(() => engine.Run().GetAwaiter().GetResult());
-            Assert.Equal(QueueState.Imported, queue.All()[0].State);
-            Assert.Equal(QueueState.Pending, queue.All()[1].State);
+            Assert.Equal(QueueState.Pending, queue.All().Single().State);
             Assert.Equal(1, server.Gets);
             Assert.Equal(1, server.Registrations);
             Assert.Equal(1, server.Completions);
@@ -91,8 +88,7 @@ static class EngineTests
     {
         using var fixture = new Fixture();
         var path = fixture.File("rphost_1/26112501.log", "synthetic missing source");
-        using var queue = new QueueStore(Path.Combine(fixture.Root, "queue.db"));
-        queue.Initialize(LogScanner.Scan(fixture.Root), InitialMode.ModifiedSince, DateTimeOffset.MinValue);
+        using var queue = LegacyQueue.Open(Path.Combine(fixture.Root, "queue.db"), fixture.Root);
         var server = new MemoryCollector { LoseChunkReply = true };
         using var http = new HttpClient(new Handler(server.Handle));
         using var api = new CollectorClient("https://localhost", "synthetic", http);
@@ -109,8 +105,7 @@ static class EngineTests
     {
         using var fixture = new Fixture();
         fixture.File("rphost_1/26112501.log", "synthetic");
-        using var queue = new QueueStore(Path.Combine(fixture.Root, "queue.db"));
-        queue.Initialize(LogScanner.Scan(fixture.Root), InitialMode.ModifiedSince, DateTimeOffset.MinValue);
+        using var queue = LegacyQueue.Open(Path.Combine(fixture.Root, "queue.db"), fixture.Root);
         var server = new MemoryCollector();
         using var http = new HttpClient(new Handler(server.Handle));
         using var api = new CollectorClient("https://localhost", "synthetic", http);
@@ -125,8 +120,7 @@ static class EngineTests
     {
         using var fixture = new Fixture();
         fixture.File("rphost_1/26112501.log", "synthetic");
-        using var queue = new QueueStore(Path.Combine(fixture.Root, "queue.db"));
-        queue.Initialize(LogScanner.Scan(fixture.Root), InitialMode.ModifiedSince, DateTimeOffset.MinValue);
+        using var queue = LegacyQueue.Open(Path.Combine(fixture.Root, "queue.db"), fixture.Root);
         var server = new MemoryCollector { LoseCompleteReply = true };
         using var http = new HttpClient(new Handler(server.Handle));
         using var api = new CollectorClient("https://localhost", "synthetic", http);
@@ -145,8 +139,7 @@ static class EngineTests
             using var fixture = new Fixture();
             fixture.File("rphost_1/26112501.log", "synthetic");
             fixture.File("rphost_1/26112502.log", "synthetic");
-            using var queue = new QueueStore(Path.Combine(fixture.Root, "queue.db"));
-            queue.Initialize(LogScanner.Scan(fixture.Root), InitialMode.ModifiedSince, DateTimeOffset.MinValue);
+            using var queue = LegacyQueue.Open(Path.Combine(fixture.Root, "queue.db"), fixture.Root);
             var server = new MemoryCollector { Intercept = request => request.Method == HttpMethod.Put ? new HttpResponseMessage((HttpStatusCode)code) : null };
             using var http = new HttpClient(new Handler(server.Handle));
             using var api = new CollectorClient("https://localhost", "synthetic", http);
@@ -163,8 +156,7 @@ static class EngineTests
         const string first = "rphost_1/26112501.log";
         fixture.File(first, "synthetic oversized file");
         fixture.File("rphost_1/26112502.log", "x");
-        using var queue = new QueueStore(Path.Combine(fixture.Root, "queue.db"));
-        queue.Initialize(LogScanner.Scan(fixture.Root), InitialMode.ModifiedSince, DateTimeOffset.MinValue);
+        using var queue = LegacyQueue.Open(Path.Combine(fixture.Root, "queue.db"), fixture.Root);
         var server = new MemoryCollector();
         server.Intercept = request => request.Method == HttpMethod.Put && server.Relative == first
             ? new HttpResponseMessage(HttpStatusCode.RequestEntityTooLarge) : null;
@@ -185,8 +177,7 @@ static class EngineTests
     {
         using var fixture = new Fixture();
         fixture.File("rphost_1/26112501.log", "synthetic");
-        using var queue = new QueueStore(Path.Combine(fixture.Root, "queue.db"));
-        queue.Initialize(LogScanner.Scan(fixture.Root), InitialMode.ModifiedSince, DateTimeOffset.MinValue);
+        using var queue = LegacyQueue.Open(Path.Combine(fixture.Root, "queue.db"), fixture.Root);
         using var cancellation = new CancellationTokenSource();
         var server = new MemoryCollector { Intercept = request => { if (request.Method == HttpMethod.Put) { cancellation.Cancel(); throw new OperationCanceledException(cancellation.Token); } return null; } };
         using var http = new HttpClient(new Handler(server.Handle));
@@ -199,8 +190,7 @@ static class EngineTests
     {
         using var fixture = new Fixture();
         var path = fixture.File("rphost_1/26112501.log", "synthetic");
-        using var queue = new QueueStore(Path.Combine(fixture.Root, "queue.db"));
-        queue.Initialize(LogScanner.Scan(fixture.Root), InitialMode.ModifiedSince, DateTimeOffset.MinValue);
+        using var queue = LegacyQueue.Open(Path.Combine(fixture.Root, "queue.db"), fixture.Root);
         var server = new MemoryCollector();
         using var http = new HttpClient(new Handler(server.Handle));
         using var api = new CollectorClient("https://localhost", "synthetic", http);
@@ -219,8 +209,7 @@ static class EngineTests
     {
         using var fixture = new Fixture();
         fixture.File("rphost_1/26112501.log", "synthetic");
-        using var queue = new QueueStore(Path.Combine(fixture.Root, "queue.db"));
-        queue.Initialize(LogScanner.Scan(fixture.Root), InitialMode.ModifiedSince, DateTimeOffset.MinValue);
+        using var queue = LegacyQueue.Open(Path.Combine(fixture.Root, "queue.db"), fixture.Root);
         var server = new MemoryCollector { Intercept = request => request.Method == HttpMethod.Put ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) : null };
         using var http = new HttpClient(new Handler(server.Handle));
         using var api = new CollectorClient("https://localhost", "synthetic", http);
@@ -236,8 +225,7 @@ static class EngineTests
     {
         using var fixture = new Fixture();
         var path = fixture.File("rphost_1/26112501.log", "synthetic-log-data");
-        using var queue = new QueueStore(Path.Combine(fixture.Root, "queue.db"));
-        queue.Initialize(LogScanner.Scan(fixture.Root), InitialMode.ModifiedSince, DateTimeOffset.MinValue);
+        using var queue = LegacyQueue.Open(Path.Combine(fixture.Root, "queue.db"), fixture.Root);
         var server = new MemoryCollector { LoseChunkReply = true };
         using var http = new HttpClient(new Handler(server.Handle));
         using var api = new CollectorClient("https://localhost", "synthetic", http);
@@ -262,9 +250,8 @@ static class EngineTests
         var server = new MemoryCollector { LoseChunkReply = true };
         using var http = new HttpClient(new Handler(server.Handle));
         using var api = new CollectorClient("https://localhost", "synthetic", http);
-        using (var queue = new QueueStore(db))
+        using (var queue = LegacyQueue.Open(db, fixture.Root))
         {
-            queue.Initialize(LogScanner.Scan(fixture.Root), InitialMode.ModifiedSince, DateTimeOffset.MinValue);
             Assert.Throws<TransportException>(() => new ClientEngine(fixture.Root, 1, queue, api).Run().GetAwaiter().GetResult());
             var item = queue.All().Single();
             Assert.Equal(QueueState.Retry, item.State);
@@ -287,8 +274,7 @@ static class EngineTests
         using var fixture = new Fixture();
         var path = fixture.File("rphost_1/26112501.log", "synthetic-log-data");
         var original = File.ReadAllBytes(path);
-        using var queue = new QueueStore(Path.Combine(fixture.Root, "queue.db"));
-        queue.Initialize(LogScanner.Scan(fixture.Root), InitialMode.ModifiedSince, DateTimeOffset.MinValue);
+        using var queue = LegacyQueue.Open(Path.Combine(fixture.Root, "queue.db"), fixture.Root);
         var server = new MemoryCollector();
         using var http = new HttpClient(new Handler(server.Handle));
         using var api = new CollectorClient("https://localhost", "synthetic", http);
@@ -300,7 +286,7 @@ static class EngineTests
         Assert.True(original.SequenceEqual(File.ReadAllBytes(path)));
         server.State = "imported";
         await engine.Run();
-        Assert.Equal(QueueState.Imported, queue.All().Single().State);
+        Assert.Equal(0, queue.All().Count);
         Assert.Equal(1, server.Completions);
         Assert.Equal(1, server.Registrations);
     }

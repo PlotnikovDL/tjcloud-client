@@ -57,9 +57,8 @@ static class ResponseBodyTests
         var db = Path.Combine(fixture.Root, "queue.db");
         using var http = TestTls.Create(server.Ca);
         using var api = new CollectorClient(server.Address, "synthetic", http);
-        using (var queue = new QueueStore(db))
+        using (var queue = LegacyQueue.Open(db, fixture.Root))
         {
-            queue.Initialize(LogScanner.Scan(fixture.Root), InitialMode.ModifiedSince, DateTimeOffset.MinValue);
             try { await new ClientEngine(fixture.Root, 1, queue, api).Run(); throw new Exception("Ожидался обрыв ответа"); }
             catch (TransportException error) { Assert.True(error.Transient); Assert.Equal(0, error.StatusCode); }
             var saved = queue.All().Single();

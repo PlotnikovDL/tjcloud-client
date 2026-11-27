@@ -4,15 +4,24 @@ public sealed record LocalFile(string RelativePath, long Size, long ModifiedTick
 
 public static class LogScanner
 {
-    public static IReadOnlyList<LocalFile> Scan(string root, int limit = 10000)
+    public static IReadOnlyList<LocalFile> Scan(string root, int? limit = null)
     {
         if (limit is < 1 or > 10000) throw new ArgumentOutOfRangeException(nameof(limit));
-        if (!Directory.Exists(root)) throw new DirectoryNotFoundException("Каталог не найден или недоступен.");
         var result = new List<LocalFile>();
-        Walk(Path.GetFullPath(root), 0);
+        foreach (var file in Enumerate(root))
+        {
+            if (limit.HasValue && result.Count >= limit.Value) throw new QueueFullException();
+            result.Add(file);
+        }
         return result;
+    }
 
-        void Walk(string directory, int depth)
+    internal static IEnumerable<LocalFile> Enumerate(string root)
+    {
+        if (!Directory.Exists(root)) throw new DirectoryNotFoundException("Каталог не найден или недоступен.");
+        return Walk(Path.GetFullPath(root), 0);
+
+        IEnumerable<LocalFile> Walk(string directory, int depth)
         {
             if (depth > 8) throw new IOException("Превышена глубина каталога (8).");
             EnsureNoReparse(directory);
@@ -23,10 +32,10 @@ public static class LogScanner
                 EnsureNoReparse(path);
                 var info = new FileInfo(path);
                 if (info.Length == 0) continue;
-                if (result.Count >= limit) throw new QueueFullException();
-                result.Add(new(relative, info.Length, info.LastWriteTimeUtc.Ticks, info.CreationTimeUtc.Ticks));
+                yield return new(relative, info.Length, info.LastWriteTimeUtc.Ticks, info.CreationTimeUtc.Ticks);
             }
-            foreach (var child in Directory.EnumerateDirectories(directory)) Walk(child, depth + 1);
+            foreach (var child in Directory.EnumerateDirectories(directory))
+                foreach (var file in Walk(child, depth + 1)) yield return file;
         }
     }
 
