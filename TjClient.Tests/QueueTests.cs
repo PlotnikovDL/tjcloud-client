@@ -128,6 +128,61 @@ static class QueueTests
         Assert.Equal(0, queue.All().Count);
     }
 
+    public static void SkipMarkerFiles()
+    {
+        using var fixture = new Fixture();
+        string marker = fixture.File(Hour, "\uFEFF");
+        string empty = fixture.File(NextHour, "");
+        fixture.File("rphost_2/26112501.log", "ab\n");
+        fixture.File("rphost_2/26112502.log", "\uFEFF" + First);
+        Assert.Equal(2, LogScanner.Scan(fixture.Root, 2).Count);
+
+        using var collector = new JournalCollector();
+        using var queue = new QueueStore(Path.Combine(fixture.Root, "queue.db"));
+        queue.BeginObservation(fixture.Root, InitialMode.ModifiedSince, DateTimeOffset.MinValue);
+        var engine = new ClientEngine(fixture.Root, 1, queue, collector.Api);
+        engine.Run().GetAwaiter().GetResult();
+        Assert.True(collector.Texts.Order().SequenceEqual(new[] { "ab\n", "\uFEFF" + First }.Order()));
+
+        File.AppendAllText(marker, Second);
+        File.AppendAllText(empty, Last);
+        engine.Run().GetAwaiter().GetResult();
+        collector.Import();
+        engine.Run().GetAwaiter().GetResult();
+        Assert.True(collector.Texts.Order().SequenceEqual(new[] { "ab\n", "\uFEFF" + First, Second, Last }.Order()));
+        Assert.True(collector.Files.Values.All(x => x.Registrations == 1 && x.Completions == 1));
+        Assert.Equal(0, queue.All().Count);
+    }
+
+    public static void SkipUnsentLegacyMarker()
+    {
+        using var fixture = new Fixture();
+        string marker = fixture.File(Hour, "\uFEFF");
+        string empty = fixture.File(NextHour, "");
+        string other = fixture.File("rphost_2/26112501.log", "abc");
+        LocalFile Snapshot(string path)
+        {
+            var info = new FileInfo(path);
+            return new(Path.GetRelativePath(fixture.Root, path).Replace('\\', '/'), info.Length,
+                info.LastWriteTimeUtc.Ticks, info.CreationTimeUtc.Ticks);
+        }
+        string db = Path.Combine(fixture.Root, "queue.db");
+        using var collector = new JournalCollector();
+        using (var queue = LegacyQueue.Open(db, fixture.Root, snapshot: [Snapshot(marker), Snapshot(empty), Snapshot(other)]))
+        {
+            File.AppendAllText(marker, First);
+            new ClientEngine(fixture.Root, 1, queue, collector.Api).Run().GetAwaiter().GetResult();
+            Assert.True(collector.Texts.Order().SequenceEqual(new[] { First, "abc" }.Order()));
+            Assert.True(queue.All().All(x => x.State == QueueState.Delivered));
+        }
+        using var reopened = new QueueStore(db);
+        collector.Import();
+        new ClientEngine(fixture.Root, 1, reopened, collector.Api).Run().GetAwaiter().GetResult();
+        Assert.Equal(0, reopened.All().Count);
+        Assert.Equal(2, collector.Files.Count);
+        Assert.True(collector.Files.Values.All(x => x.Registrations == 1 && x.Completions == 1));
+    }
+
     public static void Scope()
     {
         using var fixture = new Fixture();
