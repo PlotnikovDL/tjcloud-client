@@ -10,10 +10,18 @@ public static class LogScanner
         var result = new List<LocalFile>();
         foreach (var file in Enumerate(root))
         {
+            if (IsMarkerOnly(root, file)) continue;
             if (limit.HasValue && result.Count >= limit.Value) throw new QueueFullException();
             result.Add(file);
         }
         return result;
+    }
+
+    internal static bool IsMarkerOnly(string root, LocalFile file)
+    {
+        if (file.Size != 3) return false;
+        using var log = new LockedLog(root, file, growing: true);
+        return log.StartsWithUtf8Marker();
     }
 
     internal static IEnumerable<LocalFile> Enumerate(string root)
