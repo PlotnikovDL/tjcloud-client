@@ -13,7 +13,6 @@ sealed record IntegrationConfig
     [JsonConverter(typeof(JsonStringEnumConverter<InitialMode>))]
     public InitialMode Mode { get; init; } = InitialMode.NewFiles;
     public DateTimeOffset? SinceUtc { get; init; }
-    public bool FinishedFilesConsent { get; init; }
     public bool RecipientConsent { get; init; }
     public int ExpectedFiles { get; init; } = 1;
     public int MaxCycles { get; init; } = 60;
@@ -51,7 +50,7 @@ static class IntegrationHarness
         try
         {
             var config = ProtectedStore.Load<IntegrationConfig>(protectedPath) ?? throw new InvalidOperationException("Не найден защищённый конфиг.");
-            if (!config.FinishedFilesConsent || !config.RecipientConsent) throw new InvalidOperationException("Нет согласия на завершённые файлы и получателя.");
+            if (!config.RecipientConsent) throw new InvalidOperationException("Нет согласия на передачу получателю.");
             if (config.MaxCycles is < 1 or > 3600 || config.PollMilliseconds is < 100 or > 60000 || config.ExpectedFiles is < 0 or > 10000) throw new InvalidOperationException("Неверные ограничения теста.");
             using var single = new ProfileLock(config.StateDirectory);
             using var ca = X509Certificate2.CreateFromPem(File.ReadAllText(config.CaFile));
@@ -64,14 +63,16 @@ static class IntegrationHarness
             var scan = LogScanner.Scan(profile.Folder);
             var selected = PreviewPlan.Select(profile, scan);
             Console.WriteLine($"PREVIEW files={selected.Count} bytes={selected.Sum(x => x.Size)} baseline={scan.Count - selected.Count}");
-            queue.BeginObservation(profile.Folder, scan, profile.Mode, profile.Since);
+            queue.BeginObservation(profile.Folder, profile.Mode, profile.Since);
             Console.WriteLine("BASELINE_READY");
             var engine = new ClientEngine(profile.Folder, profile.SourceId, queue, api);
+            var imported = new List<QueueItem>();
+            engine.Progress += item => { if (item.State == QueueState.Imported) imported.Add(item); };
             for (var cycle = 0; cycle < config.MaxCycles; cycle++)
             {
                 try { await engine.Run(); }
                 catch (TransportException e) when (e.Transient) { Console.WriteLine("TRANSIENT_RETRY_PENDING"); }
-                var items = queue.All().Where(x => x.State != QueueState.Baseline).ToList();
+                var items = queue.All().Concat(imported).ToList();
                 if (items.Any(x => x.State is QueueState.ImportFailed or QueueState.Conflict or QueueState.Error or QueueState.Expired or QueueState.ImportStatusUnavailable))
                 { Summary(items); return 2; }
                 if (items.Count == config.ExpectedFiles && items.All(x => config.RequireImported ? x.State == QueueState.Imported : x.State is QueueState.Delivered or QueueState.Importing or QueueState.Imported))

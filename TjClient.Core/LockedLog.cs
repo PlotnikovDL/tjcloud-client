@@ -7,16 +7,32 @@ public sealed class LockedLog : IDisposable
     public FileStream Stream { get; }
     private readonly string path;
     private readonly LocalFile file;
-    public LockedLog(string root, LocalFile file)
+    private readonly bool growing;
+    public LockedLog(string root, LocalFile file, bool growing = false)
     {
         if (!LogScanner.IsLogPath(file.RelativePath)) throw new IOException("Недопустимый относительный путь.");
         this.file = file;
+        this.growing = growing;
         path = Path.GetFullPath(Path.Combine(root, file.RelativePath));
         LogScanner.EnsureNoReparse(path);
-        Stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 65536, FileOptions.SequentialScan);
+        Stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 65536, FileOptions.SequentialScan);
         try { Verify(); } catch { Stream.Dispose(); throw; }
     }
-    public string Hash() { Stream.Position = 0; return Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(Stream)); }
+    public string Hash()
+    {
+        Stream.Position = 0;
+        using var hash = System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256);
+        var buffer = new byte[65536];
+        long left = file.Size;
+        while (left > 0)
+        {
+            int count = Stream.Read(buffer, 0, (int)Math.Min(buffer.Length, left));
+            if (count == 0) throw new FileChangedException();
+            hash.AppendData(buffer, 0, count);
+            left -= count;
+        }
+        return Convert.ToHexStringLower(hash.GetHashAndReset());
+    }
     public void Verify()
     {
         LogScanner.EnsureNoReparse(path);
@@ -29,7 +45,7 @@ public sealed class LockedLog : IDisposable
         if (!string.Equals(resolved, path, StringComparison.OrdinalIgnoreCase))
             throw new IOException("Открытый путь не совпадает с разрешённым каталогом.");
         var info = new FileInfo(path);
-        if (info.Length != file.Size || info.LastWriteTimeUtc.Ticks != file.ModifiedTicks || info.CreationTimeUtc.Ticks != file.CreatedTicks)
+        if (info.Length < file.Size || (!growing && info.Length == file.Size && info.LastWriteTimeUtc.Ticks != file.ModifiedTicks) || info.CreationTimeUtc.Ticks != file.CreatedTicks)
             throw new FileChangedException();
     }
     [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]

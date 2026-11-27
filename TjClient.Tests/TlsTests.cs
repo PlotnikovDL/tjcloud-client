@@ -70,13 +70,13 @@ static class TlsTests
         Assert.Equal(0, redirected);
         redirect = false;
         using var fixture = new Fixture();
-        fixture.File("logs/rphost_1/26112501.log", "synthetic-harness-log");
+        fixture.File("logs/rphost_1/26112501.log", "00:01.000001-0,EXCP,0,Descr=synthetic\n");
         var caPath = fixture.File("ca.crt", ca.ExportCertificatePem());
         var jsonPath = fixture.File("synthetic-config.json", System.Text.Json.JsonSerializer.Serialize(new IntegrationConfig
         {
             Endpoint = address, Token = "synthetic-harness-token", Folder = Path.Combine(fixture.Root, "logs"), CaFile = caPath,
             StateDirectory = Path.Combine(fixture.Root, "state"), Mode = InitialMode.ModifiedSince, SinceUtc = DateTimeOffset.MinValue,
-            FinishedFilesConsent = true, RecipientConsent = true, MaxCycles = 1, ExpectedFiles = 1
+            RecipientConsent = true, MaxCycles = 1, ExpectedFiles = 1
         }));
         Assert.Equal(0, IntegrationHarness.Protect(jsonPath));
         File.Delete(jsonPath);

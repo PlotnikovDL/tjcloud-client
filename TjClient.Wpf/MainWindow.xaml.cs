@@ -124,6 +124,8 @@ public partial class MainWindow : Window
             dateText.Padding = new Thickness(0);
         }
         profile = ProtectedStore.Load<ClientProfile>(settingsPath) ?? new() { Endpoint = "https://app.tjcloud.ru" };
+        var upgraded = profile.UpgradeInterval();
+        if (upgraded != profile) { profile = upgraded; SaveProfile(); }
         FolderBox.Text = profile.Folder;
         EndpointBox.Text = profile.Endpoint;
         TokenBox.Password = profile.Token;
@@ -132,13 +134,12 @@ public partial class MainWindow : Window
         SinceRadio.IsChecked = profile.Mode == InitialMode.ModifiedSince;
         SincePicker.SelectedDate = profile.Since?.LocalDateTime;
         StartupBox.IsChecked = profile.Startup;
-        try { profile.RequireConsent(); FinishedCheck.IsChecked = true; RecipientCheck.IsChecked = true; } catch (InvalidOperationException) { }
+        try { profile.RequireConsent(); RecipientCheck.IsChecked = true; } catch (InvalidOperationException) { }
         FolderBox.TextChanged += (_, _) =>
         {
             if (loading) return;
             profile = profile.ChangeFolder(FolderBox.Text);
             loading = true; NewFilesRadio.IsChecked = true; SincePicker.SelectedDate = null; loading = false;
-            FinishedCheck.IsChecked = false;
             InvalidateCheck(true);
         };
         EndpointBox.TextChanged += (_, _) =>
@@ -154,7 +155,6 @@ public partial class MainWindow : Window
         SinceRadio.Checked += (_, _) => InvalidateCheck();
         SincePicker.SelectedDateChanged += (_, _) => InvalidateCheck();
         StartupBox.Click += (_, _) => SetStartup();
-        FinishedCheck.Unchecked += (_, _) => RevokeConsent();
         RecipientCheck.Unchecked += (_, _) => RevokeConsent();
         using (var iconStream = typeof(MainWindow).Assembly.GetManifestResourceStream("TjCloudClient.Branding.Icon")
             ?? throw new InvalidOperationException("Не найдена иконка приложения."))
@@ -227,7 +227,7 @@ public partial class MainWindow : Window
     }
     private ClientProfile ReadFields()
     {
-        if (!int.TryParse(IntervalBox.Text, out var interval) || interval is < 5 or > 86400) throw new InvalidOperationException("Интервал - целое число от 5 до 86400 секунд.");
+        if (!int.TryParse(IntervalBox.Text, out var interval) || !ClientProfile.ValidInterval(interval)) throw new InvalidOperationException("Интервал - целое число от 60 до 86 400 секунд.");
         var endpoint = EndpointPolicy.Parse(EndpointBox.Text.Trim());
         if (!Path.IsPathFullyQualified(FolderBox.Text.Trim())) throw new InvalidOperationException("Укажите полный локальный или UNC-путь.");
         return profile with { Folder = Path.GetFullPath(FolderBox.Text.Trim()), Endpoint = endpoint.AbsoluteUri, Token = TokenBox.Password,
@@ -236,7 +236,7 @@ public partial class MainWindow : Window
     }
     private void ChooseFolder(object sender, RoutedEventArgs e)
     {
-        var dialog = new OpenFolderDialog { Title = "Выберите каталог завершённых выгрузок", Multiselect = false };
+        var dialog = new OpenFolderDialog { Title = "Выберите папку технологического журнала", Multiselect = false };
         if (dialog.ShowDialog(this) == true) FolderBox.Text = dialog.FolderName;
     }
     private async void CheckClick(object sender, RoutedEventArgs e)
@@ -247,7 +247,7 @@ public partial class MainWindow : Window
         SetBusy(true);
         checkedProfile = null;
         UpdateRecipient();
-        StatusText.Text = "Проверка параметров и завершённых выгрузок...";
+        StatusText.Text = "Проверка подключения и папки технологического журнала...";
         RecipientCheck.IsChecked = false; RecipientCheck.IsEnabled = false;
         cancellation = new CancellationTokenSource();
         var ct = cancellation.Token;
@@ -265,8 +265,14 @@ public partial class MainWindow : Window
             var preview = existingQueue
                 ? queue.PreviewPeriod(snapshot, candidate.Mode, candidate.Since)
                 : PreviewPlan.Select(candidate, snapshot).Select(x => new QueueItem(x)).ToList();
-            var selected = preview.Where(x => x.State is QueueState.Pending or QueueState.Uploading or QueueState.Retry);
-            await Task.Run(() => { foreach (var item in selected) { ct.ThrowIfCancellationRequested(); using var locked = new LockedLog(candidate.Folder, item.File); locked.Verify(); } }, ct);
+            await Task.Run(() =>
+            {
+                foreach (var file in snapshot)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    using var reader = new LockedLog(candidate.Folder, file, growing: true);
+                }
+            }, ct);
             ct.ThrowIfCancellationRequested();
             checkedProfile = candidate;
             profile = candidate;
@@ -297,7 +303,7 @@ public partial class MainWindow : Window
         try
         {
             if (checkedProfile == null) throw new InvalidOperationException("Сначала нажмите «Проверить».");
-            if (FinishedCheck.IsChecked != true || RecipientCheck.IsChecked != true) throw new InvalidOperationException("Нужно подтвердить завершённость файлов и передачу получателю.");
+            if (RecipientCheck.IsChecked != true) throw new InvalidOperationException("Подтвердите передачу событий выбранному получателю.");
             var selected = checkedProfile.Approve() with { Startup = StartupBox.IsChecked == true };
             selected.RequireConsent();
             startIntentPending = true;
@@ -308,7 +314,7 @@ public partial class MainWindow : Window
                 await Task.Run(() => { using var queue = OpenQueue(selected); queue.ConfirmObservation(selected.Folder, selected.Mode, selected.Since); });
                 existingQueue = true;
                 var confirmed = selected with { Running = schedule && startIntentPending };
-                if (FinishedCheck.IsChecked != true || RecipientCheck.IsChecked != true)
+                if (RecipientCheck.IsChecked != true)
                     confirmed = confirmed with { Running = false, ConsentBinding = "" };
                 SaveProfile(confirmed);
                 profile = confirmed;
@@ -332,17 +338,17 @@ public partial class MainWindow : Window
         var active = profile;
         try
         {
-            if (FinishedCheck.IsChecked != true || RecipientCheck.IsChecked != true) throw new InvalidOperationException("Согласие на передачу отозвано. Подтвердите папку и получателя.");
+            if (RecipientCheck.IsChecked != true) throw new InvalidOperationException("Согласие на передачу отозвано. Подтвердите папку и получателя.");
             active.RequireConsent();
             StatusText.Text = "Проверка очереди и доставка...";
             await Task.Run(async () =>
             {
                 using var queue = OpenQueue(active);
-                queue.BeginObservation(active.Folder, [], active.Mode, active.Since);
+                queue.BeginObservation(active.Folder, active.Mode, active.Since);
                 using var api = createClient(active);
                 var engine = new ClientEngine(active.Folder, active.SourceId, queue, api);
                 var lastProgress = DateTimeOffset.MinValue;
-                engine.Progress += () =>
+                engine.Progress += item =>
                 {
                     if ((DateTimeOffset.UtcNow - lastProgress).TotalMilliseconds < 350) return;
                     lastProgress = DateTimeOffset.UtcNow;
@@ -354,7 +360,7 @@ public partial class MainWindow : Window
             }, ct);
             failures = 0;
             LastContactText.Text = $"Последняя успешная связь: {DateTime.Now:G}";
-            StatusText.Text = running ? "Наблюдение включено. Принятие сервером и импорт отображаются отдельно." : "Отправка сейчас завершена. Периодическое наблюдение на паузе.";
+            StatusText.Text = running ? "Наблюдение включено. После импорта порция исчезнет из очереди." : "Отправка сейчас завершена. Периодическое наблюдение на паузе.";
         }
         catch (OperationCanceledException) { StatusText.Text = "На паузе. Подтверждённые смещения сохранены."; }
         catch (TransportException error) when (error.Transient)
@@ -408,7 +414,7 @@ public partial class MainWindow : Window
             profile.RequireConsent();
             using (var queue = OpenQueue(profile))
             {
-                var item = queue.All().Single(x => x.File.RelativePath == row.Path);
+                var item = queue.All().Single(x => x.UploadPath == row.Key);
                 if (item.State is not (QueueState.Expired or QueueState.Error or QueueState.ImportStatusUnavailable)) throw new InvalidOperationException("Выберите истёкшую передачу, ошибку или файл с недоступным статусом импорта.");
                 var accepted = item.JobId != null;
                 if (accepted && item.UploadId == null)
@@ -418,7 +424,7 @@ public partial class MainWindow : Window
                 if (MessageBox.Show(this, question, "Явный повтор", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
                 if (updateQuiescing || exiting) return;
                 var registerAgain = !accepted && item.State == QueueState.Expired;
-                if (!accepted && (item.UploadId == null || registerAgain))
+                if (item.RangeStart == null && !accepted && (item.UploadId == null || registerAgain))
                 {
                     SetBusy(true);
                     cancellation = new CancellationTokenSource();
@@ -449,7 +455,7 @@ public partial class MainWindow : Window
     {
         ModePanel.IsEnabled = !busy && !running && !updateQuiescing;
         SincePicker.IsEnabled = ModePanel.IsEnabled && SinceRadio.IsChecked == true;
-        ModeCaption.Text = SinceRadio.IsChecked == true ? "Существующие по дате изменения" : "Только новые файлы";
+        ModeCaption.Text = SinceRadio.IsChecked == true ? "Существующие по дате изменения" : "Только новые события";
     }
     private void SetBusy(bool value)
     {
@@ -467,7 +473,7 @@ public partial class MainWindow : Window
     }
     private void ShowQueue(IReadOnlyList<QueueItem> items)
     {
-        QueueGrid.ItemsSource = items.Select(x => new QueueRow(x.File.RelativePath, StateName(x.State), x.Offset, x.File.Size, x.JobId?.ToString() ?? "", x.Error)).ToList();
+        QueueGrid.ItemsSource = items.Select(x => new QueueRow(x.File.RelativePath, StateName(x.State), x.Offset, x.File.Size, x.JobId?.ToString() ?? "", x.Error) { Key = x.UploadPath, RangeStart = x.RangeStart }).ToList();
         TotalText.Text = $"всего {items.Count}";
     }
 
@@ -522,12 +528,12 @@ public partial class MainWindow : Window
         EndpointBox.Text = "https://other.example";
         ok &= TokenBox.Password.Length == 0 && RecipientCheck.IsChecked == false;
         profile = new ClientProfile { Folder = @"C:\synthetic", Endpoint = "https://localhost", Token = "synthetic", SourceId = 1 }.Approve();
-        FinishedCheck.IsChecked = true;
-        FinishedCheck.IsChecked = false;
+        RecipientCheck.IsChecked = true;
+        RecipientCheck.IsChecked = false;
         ok &= profile.ConsentBinding.Length == 0;
-        FinishedCheck.IsChecked = true;
+        RecipientCheck.IsChecked = true;
         FolderBox.Text = @"C:\synthetic";
-        ok &= FinishedCheck.IsChecked == false;
+        ok &= RecipientCheck.IsChecked == false;
         var mode = UpdateProduction.IsInstalledCopy() ? "installed" : "portable";
         File.WriteAllText(Path.Combine(stateDirectory, "window-smoke.txt"), ok ? $"PASS masked-token default-new startup-off origin-clears-token folder-clears-consent consent-revoked mode={mode}" : "FAIL");
         var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap((int)ActualWidth, (int)ActualHeight, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
@@ -542,6 +548,8 @@ public partial class MainWindow : Window
 
 public sealed record QueueRow(string Path, string State, long Offset, long Size, string Job, string Error)
 {
+    public string Key { get; init; } = Path;
+    public long? RangeStart { get; init; }
     public string Progress
     {
         get
@@ -557,5 +565,5 @@ public sealed record QueueRow(string Path, string State, long Offset, long Size,
             return $"{Format(Offset)} / {Format(Size)} {unit}";
         }
     }
-    public string Details => Path + $"\nПередано: {Offset:N0} / {Size:N0} Б" + (Job.Length == 0 ? "" : "\nЗадание: " + Job) + (Error.Length == 0 ? "" : "\n" + Error);
+    public string Details => Path + (RangeStart is long start ? $"\nДиапазон байт: [{start}, {start + Size})" : "") + $"\nПередано: {Offset:N0} / {Size:N0} Б" + (Job.Length == 0 ? "" : "\nЗадание: " + Job) + (Error.Length == 0 ? "" : "\n" + Error);
 }
